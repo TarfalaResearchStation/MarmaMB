@@ -1,0 +1,4 @@
+Marma.*
+temp/
+*__pycache__*
+.env

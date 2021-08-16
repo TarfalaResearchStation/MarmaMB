@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import xdem
+import datetime
+
+import marma.analysis
 
 
 def plot_variograms(ddems: list[xdem.dDEM]):
@@ -61,7 +65,7 @@ def plot_variograms(ddems: list[xdem.dDEM]):
             axis.set_xlim(5, variogram["bins"].max())
             axis.set_xlabel("Lag (m)")
 
-        areas = np.linspace(np.prod(ddem.res), np.prod(ddem.res) * np.prod(ddem.shape), 1000)
+        areas = np.linspace(1, np.prod(ddem.res) * np.prod(ddem.shape), 1000)
 
         estimated_error: list[float] = []
         for area in areas:
@@ -73,10 +77,10 @@ def plot_variograms(ddems: list[xdem.dDEM]):
             )
 
         ax2.plot(areas, estimated_error)
-        ax2.scatter(empirical.index, empirical["std"])
+        ax2.scatter(empirical.index, empirical["nmad"])
         ax2.set_xscale("log")
         ax2.set_xlabel("Averaging area (m²)")
-        ax2.set_ylabel("Elevation uncertainty (std) (m)")
+        ax2.set_ylabel("Elevation uncertainty (NMAD) (m)")
         ax2.set_yscale("logit")
 
         # xdem.spatialstats.plot_vgm(variogram, xscale_range_split=[100, 1000, 10000], list_fit_fun=[vgm_model],
@@ -117,3 +121,44 @@ def plot_variograms(ddems: list[xdem.dDEM]):
         #plt.ylim(-0.02, 0.4)
         """
     plt.show()
+
+
+def plot_volume_change(changes: pd.DataFrame):
+
+    changes["dt"] = changes.index.right - changes.index.left
+    changes["dt"] = changes["dt"].apply(lambda dt: dt.total_seconds() / (3600 * 24 * 364.75))
+    changes["dhdt"] = changes["mean_dh"] / changes["dt"]
+    changes["dhdt_err"] = changes["dh_error"] / changes["dt"]
+
+    cumulative_dh = pd.DataFrame(data=np.transpose([changes["mean_dh"].cumsum(), changes["dh_error"]]), index=changes.index.right)
+    cumulative_dh.loc[changes.index[0].left] = 0, 0
+    cumulative_dh.columns = ["dh", "dh_error"]
+
+    cumulative_dh.sort_values("dh", inplace=True, ascending=False)
+
+    step_changes = pd.DataFrame()
+    for i, row in changes.iterrows():
+        step_changes.loc[step_changes.shape[0] + 1, ["date", "dhdt", "dhdt_err"]] = i.left, row["dhdt"], row["dhdt_err"]
+        step_changes.loc[step_changes.shape[0] + 1, ["date", "dhdt", "dhdt_err"]] = i.right, row["dhdt"], row["dhdt_err"]
+
+    plt.figure(figsize=(8, 5))
+    plt.subplot(121)
+    for i, row in changes.iterrows():
+        plt.plot([i.left, i.right], [row["dhdt"],] * 2, color="black")
+        plt.plot([i.mid] * 2, [row["dhdt"] - row["dhdt_err"], row["dhdt"] + row["dhdt_err"]], color="black", linewidth=3)
+
+    dates = np.r_[[changes.index[0].left], changes.index.right.values].astype("datetime64[ns]")
+    plt.xticks(dates, labels=pd.DatetimeIndex(dates).year, rotation=30)
+    plt.grid()
+    plt.ylabel("dH/dt (m/a)")
+
+    plt.subplot(122)
+    plt.errorbar(cumulative_dh.index, cumulative_dh["dh"], yerr=cumulative_dh["dh_error"], linestyle="--", zorder=1, color="black")
+    plt.scatter(cumulative_dh.index, cumulative_dh["dh"], marker="s", color="black", zorder=2)
+    plt.xticks(dates, labels=pd.DatetimeIndex(dates).year, rotation=30)
+    plt.grid()
+    plt.ylabel("Cumulative dH (m)")
+
+    plt.tight_layout()
+    plt.show()
+

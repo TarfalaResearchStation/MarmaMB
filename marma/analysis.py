@@ -103,7 +103,7 @@ def nmad_filter(array: np.ndarray, kernel_size: int, subsample: int = 0) -> np.n
 
 
 @numba.njit(parallel=True)
-def mean_filter(array: np.ndarray, kernel_size: int, subsample: int = 0) -> np.ndarray:
+def mean_filter(array: np.ndarray, kernel_size: int, subsample: int = 0, nan_threshold: float = 0.8) -> np.ndarray:
     """
     Calculate the local NMAD of each pixel and its neighbours within the given kernel size.
 
@@ -127,7 +127,7 @@ def mean_filter(array: np.ndarray, kernel_size: int, subsample: int = 0) -> np.n
         ]
 
         # If the subset was for some reason empty or if it contains only nans, skip it.
-        if subset.size == 0 or np.all(~np.isfinite(subset)):
+        if subset.size == 0 or (np.count_nonzero(~np.isfinite(subset)) / subset.size) < nan_threshold:
             continue
 
         # Append the calculated NMAD to the right spot in the array
@@ -161,7 +161,7 @@ def get_spatially_correlated_nmad(
     areas = 10.0 ** np.linspace(-1, np.log10(scene_area) - 0.5, steps)
 
     # Remove areas that are smaller than five pixels (because each cell needs some friends for a good NMAD)
-    areas = areas[(areas > np.prod(ddem.res) * 5)]
+    #areas = areas[(areas > np.prod(ddem.res) * 5)]
 
     # The kernel sizes will be the pixel width of the area rectangles
     kernel_sizes = (np.sqrt(areas) / np.mean(ddem.res)).astype(int)
@@ -234,15 +234,6 @@ def get_spatially_correlated_nmad(
     # Set the area in pixel coordinates.
     variance["area_px"] = variance.index / np.prod(ddem.res)
 
-    # The standard error is the variance divided by the square root of the amount of samples (aka the pixel count)
-    # The transposes are there to correctly broadcast the values.
-    # variance.loc[:, ["stderr", "stderr_upper_quartile", "stderr_lower_quartile"]] = (
-    #    (variance["nmad"].max() - variance.loc[:, ["nmad", "lower_quartile", "upper_quartile"]].values.T)
-    #    / np.sqrt(variance["area_px"]).values
-    # ).T
-    # variance.loc[:, ["stderr", "stderr_upper_quartile", "stderr_lower_quartile"]] = (
-    #    (variance["nmad"].max() - variance.loc[:, ["nmad", "lower_quartile", "upper_quartile"]].values.T)
-    # ).T
     return variance
 
 
@@ -278,24 +269,23 @@ def error(
             for arr in [slope_arr, maxc_arr]
         ]
 
-        bins = xdem.spatialstats.nd_binning(
-            values=ddem_arr,
-            list_var=[slope_arr, maxc_arr],
+        error_model = xdem.spatialstats.interp_nd_binning(
+            xdem.spatialstats.nd_binning(
+                values=ddem_arr,
+                list_var=[slope_arr, maxc_arr],
+                list_var_names=["slope", "maxc"],
+                list_var_bins=custom_bins,
+                statistics=["count", xdem.spatial_tools.nmad],
+            ),
             list_var_names=["slope", "maxc"],
-            list_var_bins=custom_bins,
-            statistics=["count", xdem.spatial_tools.nmad],
+            min_count=30,
         )
-
-        error_model = xdem.spatialstats.interp_nd_binning(bins, list_var_names=["slope", "maxc"], min_count=30)
-
-        error = error_model((slope.data, max_curvature.data)).reshape(slope.data.shape)
-
-        ddem.error = error
+        ddem.error = error_model((slope.data, max_curvature.data)).reshape(slope.data.shape)
 
         year_label = f"{ddem.start_time.year} to {ddem.end_time.year}"
 
         # Standardize by the error, remove snow/ice values, and remove large outliers.
-        standardized_dh = np.where(~stable_terrain_mask, np.nan, ddem.data / error)
+        standardized_dh = np.where(~stable_terrain_mask, np.nan, ddem.data / ddem.error)
         standardized_dh[np.abs(standardized_dh) > (4 * xdem.spatial_tools.nmad(standardized_dh))] = np.nan
 
         standardized_std = np.nanstd(standardized_dh)
@@ -320,33 +310,6 @@ def error(
 
         vgm_model, params = xdem.spatialstats.fit_sum_model_variogram(["Sph", "Sph"], variogram)
 
-        # xdem.spatialstats.plot_vgm(variogram, xscale_range_split=[100, 1000, 10000], list_fit_fun=[vgm_model],
-        #                   list_fit_fun_label=['Standardized double-range variogram'])
-
-        # plt.show()
-
-        #def area_model(area: float) -> float:
-        #    # For a double-range model
-        #    with warnings.catch_warnings():
-        #        warnings.filterwarnings("ignore", message="invalid value encountered in double_scalars")
-        #        neff_doublerange = xdem.spatialstats.neff_circ(
-        #            area, [(params[0], "Sph", params[1]), (params[2], "Sph", params[3])]
-        #        )
-
-        #    stderr_doublerange = xdem.spatial_tools.nmad(ddem_arr) / np.sqrt(neff_doublerange)
-
-        #    return stderr_doublerange
-
-        # areas_emp = list(filter(lambda x: x > 40 * 40 * ddem.res[0], [10 * 400 * 2 ** i for i in range(10)]))
-        # areas = np.linspace(1, 1e7, num=100)
-        # scene_area = (ddem.width * ddem.height) * ddem.res[0] * ddem.res[1]
-        # areas_emp = 10. ** np.linspace(-1, int(np.log10(scene_area)) - 1, 15)
-
-        # areas_emp = areas_emp[areas_emp > ddem.res[0] * ddem.res[1] * 4]
-
-        # errors = [area_model(area) for area in areas]
-        # year_label = f"{ddem.start_time.year} to {ddem.end_time.year}"
-
         variance = get_spatially_correlated_nmad(
             ddem, stable_terrain_mask, progress=False, steps=variance_steps, step_feature_count=variance_feature_count
         )
@@ -355,67 +318,11 @@ def error(
             "empirical_variance": variance,
             "vgm_model": vgm_model,
             "vgm_params": params,
-            #"area_model": area_model,
             "standardized_std": standardized_std,
-            "variogram": variogram
+            "variogram": variogram,
         }
 
-        # plt.plot(areas, errors, label="Model " + year_label)
-
-        # plt.scatter(variance.index, variance["nmad"])
-
-        # plt.show()
-
     return ddems
-
-
-'''
-        plt.subplot(2, len(ddems), i + 1)
-        plt.title(year_label)
-
-        plt.errorbar(
-            variance["radius"].values,
-            variance["nmad"].values,
-            yerr=np.abs(variance[["upper_quartile", "lower_quartile"]].values.T - variance["nmad"].values),
-            color="orange",
-        )
-        plt.scatter(variance["radius"], variance["nmad"], color="orange")
-
-        plt.xlabel("Lag (m)")
-        plt.xscale("log")
-        plt.ylabel("NMAD (m)")
-        plt.ylim(0, 1.5)
-
-        plt.subplot(2, len(ddems), len(ddems) + i + 1)
-
-        """
-        plt.fill_between(
-            variance.index, variance["stderr_lower_quartile"], variance["stderr_upper_quartile"], alpha=0.3
-        )
-        """
-        plt.errorbar(
-            variance.index,
-            variance["stderr"],
-            yerr=np.abs(
-                variance[["stderr_upper_quartile", "stderr_lower_quartile"]].values.T - variance["stderr"].values
-            ),
-        )
-        plt.scatter(variance.index, variance["stderr"])
-
-        plt.xlabel("Integrated area (m²)")
-        plt.xscale("log")
-        plt.ylabel("NMAD (m)")
-        plt.ylim(-0.02, 0.4)
-    plt.show()
-    raise NotImplementedError()
-
-    """
-        continue
-        xdem.spatialstats.plot_vgm(variogram, xscale_range_split=[100, 1000], list_fit_fun=[vgm_model],
-                           list_fit_fun_label=['Standardized double-range variogram']) 
-        plt.show()
-    """
-'''
 
 
 def get_effective_samples(ddems: list[xdem.dDEM], outlines: gu.Vector):
@@ -429,12 +336,14 @@ def get_effective_samples(ddems: list[xdem.dDEM], outlines: gu.Vector):
         )
 
         neff = xdem.spatialstats.neff_circ(
-            dissolved_outline, [(ddem.variograms["vgm_params"][0], "Sph", ddem.variograms["vgm_params"][1]), (ddem.variograms["vgm_params"][2], "Sph", ddem.variograms["vgm_params"][3])]
+            dissolved_outline,
+            [
+                (ddem.variograms["vgm_params"][0], "Sph", ddem.variograms["vgm_params"][1]),
+                (ddem.variograms["vgm_params"][2], "Sph", ddem.variograms["vgm_params"][3]),
+            ],
         )
 
         ddem.variograms["n_effective_samples"] = neff
-
-
 
 
 def volume_change(ddems: list[xdem.dDEM], outlines: gu.Vector):
@@ -446,18 +355,19 @@ def volume_change(ddems: list[xdem.dDEM], outlines: gu.Vector):
         )
         glacier_mask = queried_outlines.create_mask(ddem)
 
+        """
         error_model = scipy.interpolate.interp1d(
             ddem.variograms["empirical_variance"].index,
             ddem.variograms["empirical_variance"]["nmad"],
-            fill_value="extrapolate"
+            fill_value="extrapolate",
         )
+        """
 
         merged_area = queried_outlines.ds.dissolve().area.sum()
 
         vol_change_data[pd.Interval(pd.Timestamp(ddem.start_time), pd.Timestamp(ddem.end_time))] = {
             "mean_dh": np.nanmean(ddem.data[glacier_mask]),
-            "topographic_error": np.nanmean(ddem.error[glacier_mask]) / np.sqrt(ddem.variograms["n_effective_samples"]),
-            "spatially_correlated_error": error_model(merged_area),
+            "dh_error": np.nanmean(ddem.error[glacier_mask]) / np.sqrt(ddem.variograms["n_effective_samples"]),
             "merged_area": merged_area,
             "start_area": queried_outlines.ds[queried_outlines.ds["year"] == ddem.start_time.year].area.sum(),
             "end_area": queried_outlines.ds[queried_outlines.ds["year"] == ddem.end_time.year].area.sum(),
@@ -465,7 +375,7 @@ def volume_change(ddems: list[xdem.dDEM], outlines: gu.Vector):
         }
     vol_change = pd.DataFrame(vol_change_data).T
 
-    vol_change["dh_error"] = vol_change["topographic_error"] + vol_change["spatially_correlated_error"]
+    #vol_change["dh_error"] = vol_change["topographic_error"] + vol_change["spatially_correlated_error"]
     vol_change["mean_dv"] = vol_change["mean_dh"] * vol_change["merged_area"]
     vol_change["dv_error"] = vol_change["dh_error"] * vol_change["merged_area"]
 
