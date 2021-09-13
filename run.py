@@ -3,41 +3,29 @@ import pathlib
 
 import matplotlib.pyplot as plt
 import numpy as np
-import xdem
+#import xdem
 
-import marma
+import marma.mb_parsing
 
 import pickle
 import pdb
 
 
 def main():
-    gis_data_path = pathlib.Path("GIS/")
-    temp_path = pathlib.Path("temp/")
-
-    reference_year = 2016
-
-    dems, unstable_terrain = marma.inputs.load_all_inputs(pathlib.Path("GIS/"), pathlib.Path("temp/"), 1959)
-
-    stable_terrain_masks = {
-        year: ~unstable_terrain.query(f"year == {reference_year} | year == {year}").create_mask(dems[reference_year])
-        for year in dems
-    }
-
-    dems_coreg = marma.analysis.coregister(dems, reference_year, stable_terrain_masks)
-
-    ddems = marma.analysis.generate_ddems(dems_coreg, max_interpolation_distance=200)
-
-    slope, max_curvature = marma.analysis.get_slope_and_max_curvature(dems[reference_year])
-
-    marma.analysis.error(ddems, slope, max_curvature, stable_terrain_masks, variance_steps=20, variance_feature_count=5000)
-
-    marma.analysis.get_effective_samples(ddems, unstable_terrain)
 
     
-    marma_outlines = unstable_terrain.query("type == 'glacier' & name == 'Marma'")
+    mb = marma.mb_parsing.read_all_data(pathlib.Path("input/massbalance/"))
 
-    vol_change = marma.analysis.volume_change(ddems, marma_outlines)
+    return
+    reference_year = 2016
+
+    dems, ddems, unstable_terrain = marma.main.prepare_dems(reference_year=reference_year)
+    
+    changes = marma.analysis.volume_change(ddems, unstable_terrain)
+
+    marma.plotting.plot_volume_change(changes)
+
+    return
     
     marma.plotting.plot_variograms(ddems)
     plt.show()
