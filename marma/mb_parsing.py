@@ -84,6 +84,7 @@ def read_all_data(base_directory: Path):
             dataframe.loc[i, "geometry"] = other_measurements.iloc[0]
     stakes = gpd.GeoDataFrame(stakes, crs=3006)
     probings = gpd.GeoDataFrame(probings, crs=3006).sort_values("date")
+    probings = probings[~probings["snow_depth_cm"].isna()]
 
     return probings, stakes, densities
 
