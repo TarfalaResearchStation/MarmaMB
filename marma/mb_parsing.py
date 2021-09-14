@@ -1,44 +1,92 @@
+"""
+# Field data document parsers for Mårmaglaciären.
+Parser functions for every year since 1990 exist here, to collect and standardize the data.
+Almost every year has a different template (or a variation thereof), so many custom parsers were required.
+
+Most of the original data exist.
+Late-summer stake readings from 2003 and 2011 are mysteriously gone, but calculated ablation values exist.
+Thus, the original late-summer height can be back-tracked.
+Density pits were not dug in 2010, and data are therefore missing from that year.
+Finally, many years are missing the date at which the readings were taken.
+They are filled in with a "most-likely" standard date and are noted appropriately.
+
+The parsers themselves are mostly devoid of intepretation, unless it is explicitly mentioned.
+Some missing pieces of information are filled, such as:
+    - Snow depth == 0 in August -> probably ice.
+    - Density pits of equal depth as the probing depth at the top stake -> it was probably dug at the top stake.
+    - Snow depth is positive in September -> probably new snow.
+    - A stake without a coordinate but with the same ID as one at the previous year -> they are at the same place.
+    - A snow probing "taken in September" among others taken in May -> the date is probably wrong.
+
+Author:
+    Erik Mannerfelt
+Date:
+    September 2021
+"""
 from __future__ import annotations
 
 import datetime
+import io
+import json
 import os
 import re
-import json
 import warnings
-import io
 from pathlib import Path
 
 import geopandas as gpd
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 
-def read_all_data(base_directory: Path):
+def standard_summer_date(year: int) -> datetime.date:
+    """In case of a missing summer date, use this date as a placeholder."""
+    return datetime.date(int(year), 9, 1)
 
+
+def standard_winter_date(year: int) -> datetime.date:
+    """In case of a missing winter date, use this date as a placeholder."""
+    return datetime.date(int(year), 5, 1)
+
+
+def read_all_data(base_directory: Path):
+    """
+    Read the data from all years in the 'base_directory'.
+
+    The parser for each year is guessed based on the data it has.
+
+    :param base_directory: The directory that should contain year-directories (containing the data)
+    """
+    # Find all directories in the 'base_directory' that are numeric (thus assumed to represent years)
     year_dirs = filter(lambda d: d.isnumeric(), os.listdir(base_directory))
 
     probing_dfs = []
     stake_dfs = []
     density_dfs = []
+    # Loop over all years and parse the data
     for year in sorted(year_dirs, reverse=True):
         all_files = os.listdir(base_directory.joinpath(year))
 
+        # Find all excel files and all text files (with expected extensions)
         xls_files = list(filter(lambda s: "xls" in s and "lock" not in s, all_files))
-        txt_files = list(filter(lambda s: any(ext in s for ext in ["txt", "csv", "geojson"]) and "lock" not in s, all_files))
+        txt_files = list(
+            filter(lambda s: any(ext in s for ext in ["txt", "csv", "geojson"]) and "lock" not in s, all_files)
+        )
+        # If for any reason the directory is empty, skip it.
         if len(xls_files) == 0 and len(txt_files) == 0:
             continue
 
+        # Instantiate the data variable which will contain all file contents
+        data: dict[str, pd.DataFrame | list[str]] = {}
         with warnings.catch_warnings():
-
             warnings.filterwarnings("ignore", "Data Validation extension is not supported")
-            data: dict[str, pd.DataFrame] = {}
             i = 0
+            # Read each excel file
             for filename in xls_files:
                 for key, value in pd.read_excel(
                     base_directory.joinpath(year).joinpath(filename), sheet_name=None, header=None
                 ).items():
                     key_to_use = key
+                    # If the key already exists (e.g. 'Sheet1'), make a new unique name
                     for i in range(1, 100):
                         if key_to_use in data:
                             key_to_use = key + f"_{i}"
@@ -47,33 +95,44 @@ def read_all_data(base_directory: Path):
 
                     data[key_to_use] = value
 
+            # Read all text files and split the lines.
             for filename in txt_files:
-                with open(base_directory.joinpath(year).joinpath(filename)) as infile:
+                with open(base_directory.joinpath(year).joinpath(filename), encoding="utf-8") as infile:
                     data[os.path.splitext(filename)[0]] = infile.read().splitlines()
 
+        # Figure out the parser version and parse the data.
         probings, stakes, densities = figure_out_version(data, int(year))
 
+        # Some columns were duplicated at some point, so these need to be removed.
+        # TODO: Fix the parsers instead!
         stakes = stakes.loc[:, ~stakes.columns.duplicated()]
 
         probing_dfs.append(probings)
         stake_dfs.append(stakes)
         density_dfs.append(densities)
 
+    # Concatenate the results and keep only the columns of interest.
     densities = pd.concat(density_dfs, ignore_index=True)
     probings = pd.concat(probing_dfs, ignore_index=True)[["stake_id", "snow_depth_cm", "date", "geometry", "parser"]]
     stakes = pd.concat(stake_dfs, ignore_index=True)[
         ["stake_id", "stake_height_cm", "snow_depth_cm", "note", "surface", "date", "geometry", "parser"]
     ]
 
-    print(probings.loc[probings["date"].apply(lambda x: isinstance(x, str))])
+    # Stakes where no snow depth was reported is assumed to be 0
     stakes["snow_depth_cm"] = stakes["snow_depth_cm"].fillna(0)
+    # Filter the stakes and probings by whether measurements exist or not.
+    # TODO: Fix the parsers instead!
     stakes = stakes[is_number(stakes["stake_height_cm"])]
+    probings = probings[~probings["snow_depth_cm"].isna()]
+    # Convert all datetimes to dates (times sometimes exist, but not always, and the timezone is unknown)
     for dataframe in [stakes, probings]:
         dataframe["date"] = dataframe["date"].apply(lambda d: d if isinstance(d, datetime.date) else d.date())
 
+    # For some reason, the "nodata" version of a point is Point(inf, inf), which makes for really funny plots.
     stakes.loc[stakes["geometry"].apply(lambda p: ~np.isfinite(p.x) if p is not None else True), "geometry"] = pd.NA
 
-
+    # For all stakes and probings, if they are missing a coordinate but have an associated stake_id,
+    # try to find another measurement with the same stake_id that has a coordinate, and assign this.
     for dataframe in [stakes, probings]:
         for i, point in dataframe.loc[dataframe["geometry"].isna()].iterrows():
             other_measurements = dataframe.loc[
@@ -82,16 +141,30 @@ def read_all_data(base_directory: Path):
             if np.size(other_measurements) == 0:
                 continue
             dataframe.loc[i, "geometry"] = other_measurements.iloc[0]
+
+    # Make sure the stakes and probings are proper GeoDataFrames
     stakes = gpd.GeoDataFrame(stakes, crs=3006)
     probings = gpd.GeoDataFrame(probings, crs=3006).sort_values("date")
-    probings = probings[~probings["snow_depth_cm"].isna()]
 
     return probings, stakes, densities
 
 
-def figure_out_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def figure_out_version(
+    data: dict[str, pd.DataFrame | list[str]], year: int
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the given data by figuring out the proper parser version, and then calling that parser.
 
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :raises ValueError: If the data did not match any pre-set parser pattern.
+    :raises Exception: From the associated parser.
+
+    :returns: The probings, stakes and densities of that year.
+    """
     try:
+        # The 1998 version is checked first as it may otherwise be caught by the 1999 (or was it 2001?) version
         if all(key in data for key in ["densities_digitized", "probings_digitized", "stakes_digitized"]):
             return parse_1998_version(data, year)
         if all(key in data for key in ["Mårma_DENSITY", "Mårma_STAKES", "Mårma_PROBE"]):
@@ -122,41 +195,82 @@ def figure_out_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     raise ValueError(f"Data sheet for {year=} did not match patterns:\n{data}")
 
 
-def parse_1998_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def parse_1998_version(
+    data: dict[str, pd.DataFrame | list[str]], year: int
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "1998" data format.
+
+    The 1998 data format is made of two geojson files (stakes and probings) and one csv (density pits).
+    This format is made from a re-digitization of original data by Erik Mannerfelt in 2021.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    # Load the probings geojson
     probings = gpd.GeoDataFrame.from_features(json.loads("\n".join(data["probings_digitized"])))
 
+    # Load the stakes geojson
     stakes = gpd.GeoDataFrame.from_features(json.loads("\n".join(data["stakes_digitized"])))
+    # Make sure the columns have the right names (it was a bit inconsistent..)
     stakes.rename(columns={"height": "stake_height_cm", "snow_depth": "snow_depth_cm"}, inplace=True)
 
+    # Read the densities csv
     densities = pd.read_csv(io.StringIO("\n".join(data["densities_digitized"])))
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["from"], densities["to"])
-    densities["geometry"] = pd.NA
 
+    # Parse all dates as datetimes
     for dataframe in [densities, probings, stakes]:
         dataframe["date"] = pd.to_datetime(dataframe["date"])
 
+    # Initialize the geometry column with nans
+    densities["geometry"] = pd.NA
+    # For all measurements, see if the note contains the keywords "by stake XX",
+    # whereby that stake's coordinate will be taken.
     for i, row in densities.iterrows():
         if pd.isna(row["note"]) or "by stake " not in row["note"].lower():
             continue
-        nearby_stake = row["note"][row["note"].lower().index("by stake") + 8:].strip()
+        nearby_stake = row["note"][row["note"].lower().index("by stake") + 8 :].strip()
         if " " in nearby_stake:
-            nearby_stake = nearby_stake[:nearby_stake.index(" ")]
+            nearby_stake = nearby_stake[: nearby_stake.index(" ")]
         if "." in nearby_stake:
-            nearby_stake = nearby_stake[:nearby_stake.index(".")]
+            nearby_stake = nearby_stake[: nearby_stake.index(".")]
 
         try:
             densities.loc[i, "geometry"] = stakes.loc[stakes["stake_id"] == nearby_stake, "geometry"].iloc[0]
         except IndexError as exception:
             raise ValueError(f"Could not find stake {nearby_stake} in {stakes['stake_id'].unique()}") from exception
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "1998_version"
     return probings, stakes, densities
 
-def parse_1999_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    winter_date = datetime.date(year=year, month=5, day=1)
-    summer_date = datetime.date(year=year, month=9, day=1)
 
+def parse_1999_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "1999" data format.
+
+    The 1999 data format consists of three excel documents. It is similar to later formats, but not identical.
+    A quirk of the data is that all coordinates are local. This is handled by the 'parse_coordinates' function.
+    Also, neither the summer nor the winter measurement date is known, so this is guessed.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    # There are two density tables beside each other, so these should be split.
     raw_density_dfs = [data["Graf"].iloc[:, :2], data["Graf"].iloc[:, 3:5]]
     density_dfs: list[pd.DataFrame] = []
     for i, density_df in enumerate(raw_density_dfs):
@@ -171,50 +285,74 @@ def parse_1999_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
         density_dfs.append(parsed_density_df)
 
-
     densities = pd.concat(density_dfs, ignore_index=True)
-    densities["date"] = winter_date
+    densities["date"] = standard_winter_date(year)
 
+    # Parse the probing measurements.
     probings = set_header(data["AB"], ["cm w eq"]).iloc[:, :3]
     probings.columns = ["X", "Y", "snow_depth_cm"]
     probings = probings[is_number(probings["snow_depth_cm"])]
-
     probings["geometry"] = parse_coordinates(probings["X"], probings["Y"])
-    probings["date"] = winter_date
+    probings["date"] = standard_winter_date(year)
 
-
+    # The stakes are in the approximate format: "ID, X, Y, winter values, summer values"
     stakes_raw = set_header(data["Stakar vår"], ["X", "Y", "Djup"])
     stakes_raw = stakes_raw[is_number(stakes_raw["Höjd"])]
     stakes_raw["geometry"] = parse_coordinates(stakes_raw["X"], stakes_raw["Y"])
-
     stakes_raw["stake_id"] = "M" + stakes_raw.index.astype(str)
 
-    stakes_w = stakes_raw.rename(columns={"Höjd": "stake_height_cm", "Djup": "snow_depth_cm"})[["stake_id", "stake_height_cm", "snow_depth_cm", "geometry"]]
-    stakes_w["date"] = winter_date
+    # Split the raw data into winter and summer measurements.
+    stakes_w = stakes_raw.rename(columns={"Höjd": "stake_height_cm", "Djup": "snow_depth_cm"})[
+        ["stake_id", "stake_height_cm", "snow_depth_cm", "geometry"]
+    ]
+    stakes_w["date"] = standard_winter_date(year)
 
     stakes_s = stakes_raw.rename(columns={"Höjd höst": "stake_height_cm"})[["stake_id", "stake_height_cm", "geometry"]]
     stakes_s["snow_depth_cm"] = 0
-    stakes_s["date"] = summer_date
+    stakes_s["date"] = standard_summer_date(year)
 
+    # Concatenate the split winter and summer measurements.
     stakes = pd.concat([stakes_w, stakes_s], ignore_index=True)
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "1999_version"
+        if "note" not in dataframe:
+            dataframe["note"] = ""
+        dataframe["note"] += " Summer and winter date is guessed"
     return probings, stakes, densities
 
 
 def parse_2001_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    winter_date = datetime.date(year=year, month=5, day=1)
-    summer_date = datetime.date(year=year, month=9, day=1)
+    """
+    Parse the "2001" data format.
 
+    The 2001 data format consists of three excel documents.
+    The winter and summer dates are not recorded, so these are guessed.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    # Read the snow probings
     probings = set_header(data["Sond_koord"], ["X", "Y"])
     probings.rename(columns={"Sondvärde": "snow_depth_cm"}, inplace=True)
     probings["geometry"] = parse_coordinates(probings["X"], probings["Y"])
-    probings["date"] = winter_date
+    probings["date"] = standard_winter_date(year)
+    probings["note"] = "The winter date is guessed"
 
+    # The stakes are in the approximate format: "ID, X, Y, winter values, summer values"
     stakes_raw = set_header(data["stake_koord"], ["X", "Y"])
     cols = [str(col).strip() for col in stakes_raw.columns]
+    # The column after the "Vinter" column is unnamed, but contains the winter snow depths.
     cols[cols.index("Vinter") + 1] = "snow_depth_cm"
-    
+
+    # Loop over all columns and find the one with at least three dashes ("-") in it. The stake_id has a dash in it,
+    # and there are at least three stakes in the data
     for i in range(stakes_raw.shape[1]):
         if len(str(stakes_raw.iloc[:, i]).split("-")) >= 3:
             cols[i] = "stake_id"
@@ -224,44 +362,75 @@ def parse_2001_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes_raw = stakes_raw[is_number(stakes_raw["Vinter"])]
     stakes_raw["geometry"] = parse_coordinates(stakes_raw["X"], stakes_raw["Y"])
 
+    # Split the winter and summer values
     stakes_w = stakes_raw.rename(columns={"Vinter": "stake_height_cm"})
-    stakes_w["date"] = winter_date
+    stakes_w["date"] = standard_winter_date(year)
 
     stakes_s = stakes_raw.rename(columns={"Sommar": "stake_height_cm"})
-    stakes_s["date"] = summer_date
+    stakes_s["date"] = standard_summer_date(year)
     stakes_s["snow_depth_cm"] = 0
-    stakes_s.index += 1000
 
     stake_cols = ["stake_id", "stake_height_cm", "snow_depth_cm", "date", "geometry"]
-    stakes = pd.concat([stakes_w[stake_cols], stakes_s[stake_cols]])
+    stakes = pd.concat([stakes_w[stake_cols], stakes_s[stake_cols]], ignore_index=True)
+
+    stakes["note"] = "The winter and summer dates are guessed"
 
     densities = set_header(data["Blad1"], ["Djup", "Vikt"])
     densities = densities[is_number(densities["Djup"])]
 
+    # The length of the sample is not noted if it's standard (25 cm)
     densities["Längd"] = densities["Längd"].fillna(25)
 
-    densities["depth_cm"] = pd.IntervalIndex.from_arrays(left=densities["Djup"] - densities["Längd"], right=densities["Djup"])
+    densities["depth_cm"] = pd.IntervalIndex.from_arrays(
+        left=densities["Djup"] - densities["Längd"], right=densities["Djup"]
+    )
 
     densities = densities.rename(columns={"Densitet": "density"})[["depth_cm", "density"]]
-    densities["date"] = winter_date
+    densities["date"] = standard_winter_date(year)
+    densities["note"] = "The winter date is guessed"
+
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2001_version"
-
     return probings, stakes, densities
 
-def parse_2002_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
+def parse_2002_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2002" data format.
+
+    The 2002 data format consists of three excel documents.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    # Read the snow probings
     probings = set_header(data["marma2002"], ["Date", "Sounding"])
     probings.columns = [str(col).strip() for col in probings.columns]
+    # The snow depth is recorded in m; convert this to cm
     probings["snow_depth_cm"] = probings["Sounding"] * 100
     probings["geometry"] = parse_coordinates(probings["Easting"], probings["Northing"])
-    probings["note"] = "Prober: " + probings["Sounder"] + ". Alternative: "  + (probings["Alternative"] * 100).astype(str)
-
-    probings = gpd.GeoDataFrame(probings.rename(columns={"Date": "date"})[["snow_depth_cm", "date", "note", "geometry"]], crs=3006)
+    # Some notes exist that may or may not be interesting.
+    probings["note"] = (
+        "Prober: " + probings["Sounder"] + ". Alternative: " + (probings["Alternative"] * 100).astype(str)
+    )
+    # Convert the probings to a GeoDataFrame and only keep the interesting columns.
+    probings = gpd.GeoDataFrame(
+        probings.rename(columns={"Date": "date"})[["snow_depth_cm", "date", "note", "geometry"]], crs=3006
+    )
+    # Some probings lack a date for some reason, so the closest date is assigned.
     probings["date"] = probings["date"].ffill()
 
+    # The stakes are in the approximate format: "ID, Easting, Northing, winter values, summer values"
     stakes_raw = set_header(data["Blad1"], ["Date", "Height", "Sounder"])
     cols = [str(col).strip() for col in stakes_raw.columns]
+    # The unnamed column after the VT-02 column is the spring stake height
     cols[list(data["Blad1"].iloc[0].values).index("VT-02") + 1] = "spring_height"
     cols[list(data["Blad1"].iloc[0].values).index("HT-02")] = "fall_height"
     stakes_raw.columns = cols
@@ -269,17 +438,28 @@ def parse_2002_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes_raw["note"] = "Prober: " + stakes_raw["Sounder"].astype(str)
     stakes_raw["geometry"] = parse_coordinates(stakes_raw["Easting"], stakes_raw["Northing"])
 
-    stakes = stakes_raw.rename(columns={"Date": "date", "WPT": "stake_id", "spring_height": "stake_height_cm", "d": "snow_depth_cm"})[["stake_id", "date", "stake_height_cm", "snow_depth_cm", "note", "geometry"]]
+    # Create the stakes output with only spring measurements first.
+    stakes = stakes_raw.rename(
+        columns={"Date": "date", "WPT": "stake_id", "spring_height": "stake_height_cm", "d": "snow_depth_cm"}
+    )[["stake_id", "date", "stake_height_cm", "snow_depth_cm", "note", "geometry"]]
 
-    stakes_s = stakes_raw.rename(columns={"WPT": "stake_id", "fall_height": "stake_height_cm"})[["stake_id", "stake_height_cm", "geometry"]]
-    stakes_s[["date", "note", "snow_depth_cm"]] = datetime.date(year=year, month=9, day=1), pd.NA, 0
+    # Then get the summer measurements.
+    stakes_s = stakes_raw.rename(columns={"WPT": "stake_id", "fall_height": "stake_height_cm"})[
+        ["stake_id", "stake_height_cm", "geometry"]
+    ]
+    stakes_s[["date", "note", "snow_depth_cm"]] = standard_summer_date(year), pd.NA, 0
+    stakes_s["note"] += " Summer date is guessed."
 
+    # Finally, append the summer measurements to the output
     stakes = stakes.append(stakes_s, ignore_index=True)
     stakes = stakes[~stakes["stake_id"].isna()]
 
+    # There are multiple density pits in the same sheet, so these need to be split individually.
     density_df_breaks = pd.DataFrame(columns=["start"])
+    # They also contain coordinates for once!
     density_coordinates = pd.DataFrame(columns=["easting", "northing"])
     density_i = 0
+    # Loop over each row, extract the coordinates, and mark the breaks between the density pits.
     for i, row in data["Densitet"].iterrows():
         row_str = str(row)
         if "Koordinater" in row_str:
@@ -291,32 +471,61 @@ def parse_2002_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         density_df_breaks.loc[density_i] = i
         density_i += 1
     density_df_breaks["end"] = density_df_breaks["start"].shift(-1).fillna(data["Densitet"].shape[0])
-    
-    density_coordinates = parse_coordinates(density_coordinates["easting"].values, density_coordinates["northing"].values)
-    density_dfs: list[pd.DataFrame] = []
 
+    density_coordinates = parse_coordinates(
+        density_coordinates["easting"].values, density_coordinates["northing"].values
+    )
+    density_dfs: list[pd.DataFrame] = []
+    # Loop over the row breaks, extract the data from the density sheet, and parse it.
     for i, row in density_df_breaks.iterrows():
-        density_df = set_header(data["Densitet"].iloc[row["start"]:row["end"]], ["Djup (cm)"])
+        density_df = set_header(data["Densitet"].iloc[row["start"] : row["end"]], ["Djup (cm)"])
         density_df = density_df[~density_df["Densitet (g/cm3)"].isna()]
 
+        # Of course, there are two different ways that depth is expressed...
         if "Bottendjup (cm)" in density_df:
-            density_df["depth_cm"] = pd.IntervalIndex.from_arrays(left=density_df["Topp Djup (cm)"], right=density_df["Bottendjup (cm)"])
+            density_df["depth_cm"] = pd.IntervalIndex.from_arrays(
+                left=density_df["Topp Djup (cm)"], right=density_df["Bottendjup (cm)"]
+            )
         else:
-            density_df["depth_cm"] = pd.IntervalIndex.from_arrays(left=density_df["Djup (cm)"] - density_df["Längd snödel (cm)"], right=density_df["Djup (cm)"])
-
+            density_df["depth_cm"] = pd.IntervalIndex.from_arrays(
+                left=density_df["Djup (cm)"] - density_df["Längd snödel (cm)"], right=density_df["Djup (cm)"]
+            )
 
         density_df["date"] = probings["date"].max()
         density_df["geometry"] = density_coordinates[i]
-        density_dfs.append(density_df.rename(columns={"Densitet (g/cm3)": "density"})[["depth_cm", "density", "date", "geometry"]])
-
+        density_dfs.append(
+            density_df.rename(columns={"Densitet (g/cm3)": "density"})[["depth_cm", "density", "date", "geometry"]]
+        )
+    # Concatenate the different density pit measurements.
     densities = pd.concat(density_dfs, ignore_index=True)
+
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2002_version"
 
     return probings, stakes, densities
 
-def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
 
+def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2003" data format.
+
+    This interesting data format has two excel documents a separate coordinate file!
+    To make things exciting, the coordinates' decimal point is also in the wrong place by three digits!
+    The winter stake measurements are expressed as comments during the snow probings.
+    The summer stake measurements are missing, but the calculated ablation values exist.
+    Therefore, a reverse-engineering of the ablation values and winter stakes is done to get the summer heights.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    # Read the probing data. The "wpt" will be correlated with the coordinate file to get coordinates.
     probings = data["sondering"]
     date_str = probings.iloc[0, 1]
     probings = set_header(probings, ["wpt", "d"])
@@ -324,18 +533,22 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
     gps_coords = gpd.GeoDataFrame()
     for row in data["marma03wpt"]:
-
+        # The columns with data can be split by 5 "multiple consecutive whitespace" delimiters.
         try:
-            wpt_name, date_str, time_str, easting, northing = re.split("[\s]+", row.replace("\t", " "))[:5]
+            wpt_name, date_str, time_str, easting, northing = re.split(r"[\s]+", row.replace("\t", " "))[:5]
+        # If it fails with "not enough values to unpack", it's a header or something else.
         except ValueError as exception:
             if "not enough values to unpack" not in str(exception):
                 raise exception
             continue
 
+        # This is to remove headers or other lines that happened to have 5 whitespaces
         if not is_number(wpt_name):
             continue
 
+        # Non-ISO-8601 dates should be illegal
         date = datetime.datetime.strptime(date_str + " " + time_str, "%d-%b-%y %H:%M")
+        # The coordinates are off by a factor of 1000, obviously!
         gps_coords.loc[gps_coords.shape[0], ["wpt", "date", "easting", "northing"]] = (
             wpt_name,
             date,
@@ -346,31 +559,36 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     gps_coords["geometry"] = parse_coordinates(gps_coords["easting"], gps_coords["northing"])
     gps_coords["wpt"] = gps_coords["wpt"].astype(int)
 
+    # Get the GPS coordinates by joining on the wpt column, and rename some columns
     probings = probings.merge(gps_coords, on="wpt").rename(
         columns={"d": "snow_depth_cm", "kommentar (för orientering, mest)": "note"}
     )
 
-    probings = probings[is_number(probings["snow_depth_cm"])]
-
-    probings = probings[["snow_depth_cm", "note", "date", "geometry"]]
+    # Remove invalid values and keep only the interesting columns
+    probings = probings[is_number(probings["snow_depth_cm"])][["snow_depth_cm", "note", "date", "geometry"]]
 
     # Some dates are most likely wrong; they are from 2002 supposedly, which doesn't make sense as another...
     # ... document says these are from April 2003!
+    # Therefore, they are removed and filled by the closest 2003-value
     probings.loc[probings["date"].apply(lambda d: d.year == 2002), "date"] = pd.NA
     probings["date"] = probings["date"].bfill()
 
     stakes = gpd.GeoDataFrame(
         columns=["stake_id", "snow_depth_cm", "stake_height_cm", "date", "note", "geometry"], crs=3006
     )
-
+    # The winter stake measurements are comments in the probings file...
+    # Loop through all comments and parse the notes to get the stakes
+    # Some stakes are not given IDs, so these will be given an "unknown" number
     unknowns_n = 0
     for _, probing in probings.iterrows():
+        # The stake heights are either colon or equal-sign separated, because who needs consistency?
         if not any(s in str(probing["note"]) for s in ["h=", "h:"]):
             continue
         stake_height_cm = np.nan
         stake_id = ""
 
         for word in str(probing["note"]).split(" "):
+            # The stake_id is always 4 characters long and contains a dash
             if len(word) == 4 and "-" in word:
                 stake_id = word
             elif "h:" in word or "h=" in word:
@@ -378,10 +596,12 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
                 # Ugly hardcoding of note ("300 was removed")
                 if "300 togs av" in probing["note"]:
                     stake_height_cm -= 300
+        # If no stake_id was found in the note, add it as one of the unknowns.
         if len(stake_id) == 0:
             stake_id = f"unknown_{unknowns_n}"
             unknowns_n += 1
 
+        # Take the date, probing depth, coordinate, and note from the
         stakes.loc[stakes.shape[0]] = (
             stake_id,
             probing["snow_depth_cm"],
@@ -391,9 +611,8 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
             probing["geometry"],
         )
 
-    stakes["x"] = stakes["geometry"].apply(lambda geom: geom.x)
-
     # Extract all of the stake names (sorted by the Easting coordinate)
+    stakes["x"] = stakes["geometry"].apply(lambda geom: geom.x)
     sorted_stake_names = [name for name in stakes.sort_values("x")["stake_id"].values if "unknown" not in name]
     stakes.drop(columns="x", inplace=True)
     # There are no stake measurements anywhere from the summer, only the calculated ablation...
@@ -402,9 +621,8 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     assert len(sorted_stake_names) == summer_ablation.shape[0]
     summer_ablation["stake_id"] = sorted_stake_names
 
-    # density_dfs = pd.DataFrame(columns=["location", "depth_cm", "density", "date"])
+    # To derive the summer heights, first the densities have to be parsed.
     density_dfs = []
-
     for key in data:
         if " dens" not in key:
             continue
@@ -441,6 +659,7 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         np.concatenate([density_df[density_cols].values for density_df in density_dfs]), columns=density_cols
     )
 
+    # The mean densities (average weighted by sample length) are used to back-calculate the ablation value.
     mean_densities = densities.groupby(densities["location"]).apply(
         lambda df: np.average(
             df["density"].astype(float),
@@ -473,16 +692,17 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         summer_ablation["summer_snow_w_abl"] + summer_ablation["ice_melt"]
     )
 
-    summer_ablation["date"] = datetime.date(year=year, month=9, day=1)
+    summer_ablation["date"] = standard_summer_date(year)
     summer_ablation[
         "note"
-    ] = "Only w.e. ablation values were available so the stake height is derived from this and the winter values. A compacted snow density of 0.6 was assumed, and 0.9 for pure ice."
+    ] = "Only w.e. ablation values were available so the stake height is derived from this and the winter values. A compacted snow density of 0.6 was assumed, and 0.9 for pure ice. The summer date is guessed."
 
     stakes = stakes.append(
         summer_ablation.rename(columns={"summer_snow_w_abl": "snow_depth_cm", "summer_height": "stake_height_cm"})[
             stakes.columns
         ]
     )
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2003_version"
 
@@ -490,7 +710,21 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
 
 def parse_2004_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2004" data format.
 
+    The data format consists of two excel documents.
+    The winter and summer dates are missing.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
     probings = set_header(data["gpscombi"], ["Stake", "Tid/Datum", "Easting"]).rename(
         columns={"Tid/Datum": "date", "Stake": "stake_id", "Kom.": "note"}
     )
@@ -508,13 +742,17 @@ def parse_2004_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes["geometry"] = parse_coordinates(stakes["East"], stakes["North"])
 
     stakes_w = stakes.rename(columns={"Snödjup": "snow_depth_cm", "vinterhöjd": "stake_height_cm"})
-    stakes_w["date"] = datetime.date(year, 4, 15)  # TODO: Find the actual date
+    stakes_w["date"] = standard_winter_date(year)
+    stakes_w["note"] = "The winter date is guessed."
 
     stakes_s = stakes.rename(columns={"sommarhöjd": "stake_height_cm"})
     stakes_s["snow_depth_cm"] = 0
-    stakes_s["date"] = datetime.date(year, 9, 1)  # TODO: Find the actual date
+    stakes_s["date"] = standard_summer_date(year)
+    stakes_s["note"] = "The summer date is guessed"
 
-    stakes = pd.concat([stakes_w, stakes_s])[["stake_id", "snow_depth_cm", "stake_height_cm", "date", "geometry"]]
+    stakes = pd.concat([stakes_w, stakes_s])[
+        ["stake_id", "snow_depth_cm", "stake_height_cm", "date", "note", "geometry"]
+    ]
 
     densities = set_header(data["Densitet"], ["Snödjup", "Densitet (kg/m3)"]).rename(
         columns={"Densitet (kg/m3)": "density"}
@@ -523,9 +761,11 @@ def parse_2004_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities.iloc[:, 1], densities["Snödjup"])
     densities = densities[~densities["depth_cm"].isna()]
     densities["date"] = probings["date"].iloc[0].date()
+    densities["note"] = "The winter date is guessed."
 
-    densities = densities[["depth_cm", "density", "date"]]
+    densities = densities[["depth_cm", "density", "date", "note"]]
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2004_version"
 
@@ -533,27 +773,37 @@ def parse_2004_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
 
 def parse_2005_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2005" data format.
 
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
     probings = set_header(data["sond"], ["Alt", "Snödjup (m)"])
     cols = [str(col).strip() for col in probings.columns]
     cols[-1] = "note"
     probings.columns = cols
-
-    # TODO: Find out the actual date instead of guessing.
-    date = datetime.date(year, 4, 15)
 
     probings.loc[~probings["Alt"].isna(), "Snödjup (m)"] *= 100
     probings["geometry"] = parse_coordinates(probings["Easting"], probings["Northing"])
 
     probings = probings[["Snödjup (m)", "note", "geometry"]]
     probings.columns = ["snow_depth_cm", "note", "geometry"]
-    probings["date"] = date
+    probings["date"] = standard_winter_date(year)
+    probings["note"] = "The winter date is guessed"
 
     densities = set_header(data["Density"], ["From", "To", "Density"])
     densities = densities[is_number(densities["Density"])]
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["From"], densities["To"])
     densities = densities[["depth_cm", "Density"]].rename(columns={"Density": "density"})
-    densities["date"] = date
+    densities["date"] = standard_winter_date(year)
+    densities["note"] = "The winter date is guessed"
 
     stakes = set_header(data["Stakar"], ["Stake", "Easting"])
 
@@ -573,28 +823,45 @@ def parse_2005_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes_w = stakes[["Stake", "H0", "D", "geometry"]].rename(
         columns={"Stake": "stake_id", "H0": "stake_height_cm", "D": "snow_depth_cm"}
     )
-    stakes_w["date"] = date
+    stakes_w["date"] = standard_winter_date(year)
+    stakes_w["note"] = "The winter date is guessed"
 
     stakes_s = stakes[["Stake", "H1", "geometry"]].rename(columns={"Stake": "stake_id", "H1": "stake_height_cm"})
     stakes_s["snow_depth_cm"] = 0.0
-    # TODO: Find the actual date
-    stakes_s["date"] = datetime.date(year, 9, 1)
+    stakes_s["date"] = standard_summer_date(year)
+    stakes_s["note"] = "The summer date is guessed"
 
     stakes = pd.concat([stakes_w, stakes_s], ignore_index=True)
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2005_version"
     return probings, stakes, densities
 
 
 def parse_2013_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2013" data format.
 
+    The 2013 data format consists of one excel document.
+    The summer date for 2013 is missing.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    # Read the densities
     densities = set_header(data["Density"], ["From", "To", "Density"])
-    date = densities.iloc[0, -1].date()
+    winter_date = densities.iloc[0, -1].date()
     densities = densities[densities["Density"].apply(lambda s: is_number(s) and float(s) != 0.0)]
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["From"], densities["To"])
     densities = densities[["depth_cm", "Density"]].rename(columns={"Density": "density"})
-    densities["date"] = date
+    densities["date"] = winter_date
 
     probings = set_header(data["Probing data"], ["Easting", "Northing"])
     probings = probings[is_number(probings["Snow depth"])]
@@ -602,7 +869,7 @@ def parse_2013_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
     probings = probings[["Snow depth", "Note", "geometry"]]
     probings.columns = ["snow_depth_cm", "note", "geometry"]
-    probings["date"] = date
+    probings["date"] = winter_date
 
     stakes = set_header(data["Summer balance calc"], ["Stake", "Easting", "Northing", "Elevation"])
     stakes = stakes[is_number(stakes["HW"])]
@@ -612,24 +879,37 @@ def parse_2013_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         columns={"stake_id": "Stake", "HW": "stake_height_cm", "DW": "snow_depth_cm"}
     )
     stakes_w["surface"] = "s"
-    stakes_w["date"] = date
+    stakes_w["date"] = winter_date
 
     stakes_s = stakes[["Stake", "HL", "Surface", "geometry"]].rename(
         columns={"stake_id": "Stake", "HL": "stake_height_cm", "Surface": "surface"}
     )
     stakes_s["snow_depth_cm"] = 0.0
-    # TODO: Try to find this information instead of guessing on September
-    stakes_s["date"] = datetime.date(year, 9, 1)
+    stakes_s["date"] = standard_summer_date(year)
 
     stakes = pd.concat([stakes_w, stakes_s])
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2013_version"
     return probings, stakes, densities
 
 
 def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2016" data format.
 
+    The 2016 data format consists of one excel file.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
     # Densities are made first (in 2016, only the densities have a winter date)
     densities = data["Density"]
     densities = set_header(densities, ["From", "To", "Density"])
@@ -649,37 +929,47 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         probings["geometry"] = parse_coordinates(probings["Easting"], probings["Northing"])
     probings = probings[["stake_id", "snow_depth_cm", "note", "geometry"]]
 
+    # The date can be a bit hard to find as it is defined in different places over different years (2016, 2015...)
     try:
-        date = densities.iloc[:, -1][densities.iloc[:, -1].apply(lambda d: hasattr(d, "year"))].iloc[0].date()
+        # This may work in some cases. If not, and IndexError is reached an another more convoluted search is made.
+        winter_date = densities.iloc[:, -1][densities.iloc[:, -1].apply(lambda d: hasattr(d, "year"))].iloc[0].date()
     except IndexError:
+        # Convert the data into a huge lower-case string.
         data_str = data["Probing data"].astype(str).applymap(lambda s: s.lower())
 
+        # All cells that contain "apr" (for April) or all datetime objects are possible dates.
         potential_dates = data_str.values[
             data_str.applymap(lambda s: "apr" in s).values
             | data["Probing data"].applymap(lambda d: isinstance(d, datetime.datetime))
         ]
 
+        # There could also be dates in the density sheet!
         potential_dates = np.append(
             potential_dates,
             data["Density"].values[data["Density"].applymap(lambda d: isinstance(d, datetime.datetime))],
         )
-        date = None
+        # Initialize the winter date variable, then try to convert the found dates until one works.
+        winter_date = None
         for potential_date in potential_dates:
             try:
-                date = pd.Timestamp(potential_date).date()
+                winter_date = pd.Timestamp(potential_date).date()
             except ValueError:
                 continue
             break
 
-        if date is None:
+        # If no potential date was convertible, raise an error
+        if winter_date is None:
             raise ValueError("Could not find winter date")
 
-    probings["date"] = date
-    densities["date"] = date
+    # At this point, the winter date exists (or an error had been raised)
+    probings["date"] = winter_date
+    densities["date"] = winter_date
 
     stakes_raw = data["Stake ablation"]
     stakes = pd.DataFrame()
 
+    # Here, some slight repetition of the 'set_header()' functionality is made. This is because some intermediate
+    # information is still needed.
     mask = np.sum([stakes_raw == value for value in ["Stake", "Easting", "Northing", "HW"]], axis=0).sum(axis=1) >= 4
 
     col_index = np.argwhere(mask).ravel()[-1]
@@ -687,6 +977,7 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes_raw.columns = stakes_raw.loc[col_index]
     stakes_raw = stakes_raw.dropna(how="all")
 
+    # Extract the winter readings first
     stakes = (
         stakes_raw[["Stake", "Easting", "Northing", "HW", "DW"]]
         .copy()
@@ -697,9 +988,10 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes = stakes.loc[:, ~stakes.columns.duplicated()]
     stakes = stakes[stakes["Stake"] != "#"]
     stakes = stakes.loc[col_index + 1 :]
+    stakes["date"] = winter_date
 
-    stakes["date"] = date
-
+    # The summer readings are in columns left-to-right. The date is in one of the columns' headers.
+    # Sometimes, the date is wrong so it has to be validated.
     previous_date = pd.Timestamp(year=1900, month=1, day=1)
     for i, col in enumerate(stakes_raw):
         if "H" not in str(col):
@@ -713,28 +1005,30 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         date_str = str(subset.iloc[2, 1])
         if date_str == "nan":
             if "HS" in subset:
-                date = datetime.date(year, 9, 1)
+                summer_date = standard_summer_date(year)
             else:
                 continue
         else:
             month = date_str[5:7]
             day = date_str[8:10]
-            date = pd.Timestamp(year=year, month=int(month), day=int(day))
+            summer_date = pd.Timestamp(year=year, month=int(month), day=int(day))
 
-        if date < previous_date and col != "HS":
-            date = pd.Timestamp(year=date.year + 1, month=date.month, day=date.day)
+        # TODO: Explain what's going on here. I'm lost!
+        if winter_date < previous_date and col != "HS":
+            summer_date = pd.Timestamp(year=summer_date.year + 1, month=summer_date.month, day=summer_date.day)
 
-        previous_date = date
+        previous_date = summer_date
 
         for j, row in subset.iterrows():
-            if all((any("(m)" == row.values), any("(S/SI/I/F)" == row.values))):
+            # Iteratively find the header row by identifying the units
+            if all((any(row.values == "(m)"), any(row.values == "(S/SI/I/F)"))):
                 data_header_row = j
                 break
         subset = subset.iloc[data_header_row + 1 :]
         # Remove rows where no stake height exists
         subset = subset[~subset.iloc[:, 0].isna()]
         subset.columns = ["height", "surface", "Stake"]
-        subset["date"] = date
+        subset["date"] = winter_date
 
         stakes = pd.concat([stakes, subset], ignore_index=True)
 
@@ -743,18 +1037,35 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes["stake_height_cm"] = stakes["height"] * 100
     stakes["snow_depth_cm"] = stakes["winter_snow_depth"] * 100
 
+    # Parse the last easting and northing columns (there may be multiple; RT90 and SWEREF99TM)
     stakes["geometry"] = parse_coordinates(
         stakes.loc[:, stakes.columns == "Easting"].iloc[:, -1], stakes.loc[:, stakes.columns == "Northing"].iloc[:, -1]
     )
+    # Standardize the way the identification is written (in some: M-1, in others: M1)
     stakes["stake_id"] = stakes["stake_id"].astype(str).str.replace("M-", "M")
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2016_version"
+
     return probings, stakes, densities
 
 
 def parse_2017_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2017" data format.
 
+    The 2017 data format consists of one excel document for many different glaciers, including Mårmaglaciären.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
     probings = data["Mårma Sondering"]
 
     date_str = str(probings.iloc[1, 0])
@@ -787,10 +1098,8 @@ def parse_2017_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
             stake_col = str(point["stake_id"]).replace(stake_row, "")
             dataframe.loc[i, "stake_id"] = "M" + stake_row.zfill(2) + stake_col
 
-    ##stakes["stake_id"] = "M" + stakes["stake_id"].astype(str)
-
+    # Retain only the columns of interest.
     stakes = stakes[list(columns.values())]
-    stakes[~is_number(stakes["snow_depth_cm"])] = np.nan
 
     densities = data["Mårma Densitet"]
     date_str = str(densities.iloc[1, 0])
@@ -800,18 +1109,32 @@ def parse_2017_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     densities = densities[["depth_cm", "Densitet"]].rename(columns={"Densitet": "density"})
     densities["date"] = date
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2017_version"
+
     return probings, stakes, densities
 
 
 def parse_2019_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2019" data format.
+
+    The 2019 data format consists of one excel document.
+
+    The version year has nothing to do with when it was created;
+    it is the first year it was encountered going back in time.
+    For example, 1997 may use the 1998 parser, but 1999 will not use the 1998 parser.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
     probings = data["Mårma_PROBE"]
 
-    date = (
-        probings.iloc[0, 1].date()
-        if isinstance(probings.iloc[0, 1], datetime.datetime)
-        else datetime.date(int(year), 4, 1)
+    winter_date = (
+        probings.iloc[0, 1].date() if isinstance(probings.iloc[0, 1], datetime.datetime) else standard_winter_date(year)
     )
 
     probings = set_header(probings, ["E", "N"])
@@ -821,7 +1144,7 @@ def parse_2019_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         .drop(columns=["#", "E", "N"])
         .dropna(subset=["snow_depth_cm"])
     )
-    probings["date"] = date
+    probings["date"] = winter_date
 
     stakes = set_header(data["Mårma_STAKES"], ["DATE", "STAKE ID"])
     stakes = stakes[stakes["DATE"].apply(lambda d: hasattr(d, "year") and hasattr(d, "month"))]
@@ -840,22 +1163,40 @@ def parse_2019_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
     densities = data["Mårma_DENSITY"]
 
-    density_date = densities.iloc[0, 1] if isinstance(densities.iloc[0, 1], datetime.datetime) else date
+    density_date = densities.iloc[0, 1] if isinstance(densities.iloc[0, 1], datetime.datetime) else winter_date
     densities = set_header(densities, ["FROM (cm)", "TO (cm)"])
 
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["FROM (cm)"], densities["TO (cm)"])
     densities = densities.rename(columns={"DENSITY": "density"})[["depth_cm", "density"]]
     densities["date"] = density_date
 
+    # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2019_version"
+
     return probings, stakes, densities
 
 
 @np.vectorize
 def is_number(obj: object) -> bool:
-    obj = str(obj)
+    """
+    Validate if an object or array of objects could be represented as numbers.
 
+    NaNs are not considered valid numbers.
+
+    :examples:
+    >>> is_number(5)
+    True
+    >>> is_number("5")
+    True
+    >>> is_number("five")
+    False
+    >>> is_number(["5", "five"])
+    [True, False]
+    >>> is_number(np.nan)
+    False
+    """
+    obj = str(obj)
     try:
         number = float(obj)
         return not np.isnan(number)
@@ -864,6 +1205,27 @@ def is_number(obj: object) -> bool:
 
 
 def set_header(dataframe: pd.DataFrame, column_values: list[str]) -> pd.DataFrame:
+    """
+    Identify and set the proper header column in a parsed dataframe.
+
+    For example, the dataframe might look like this:
+    >>> df # doctest:+SKIP
+        1   2   3   4   5
+    0   x   y   z   val note
+    1   0.5 0.3 1.  5.  "Test data"
+
+    In this case, the row "0" is the actual header, and should be set appropriately:
+    >>> set_header(df, column_values=["x", "y"])  # doctest:+SKIP
+        x   y   z   val note
+    1   0.5 0.3 1.  5.  "Test data"
+
+    :param dataframe: The dataframe to modify a copy of.
+    :param column_values: A list of column names to identify as the header.
+
+    :raises IndexError: If all columns could not be found.
+
+    :returns: A copy of the dataframe with the properly set header.
+    """
     new_data = dataframe.copy()
 
     mask = np.sum([dataframe == value for value in column_values], axis=0).sum(axis=1) >= len(column_values)
@@ -876,11 +1238,14 @@ def set_header(dataframe: pd.DataFrame, column_values: list[str]) -> pd.DataFram
     return new_data
 
 
-def parse_coordinates(easting: np.ndarray, northing: np.ndarray) -> gpd.GeoSeries:
+def parse_coordinates(
+    easting: np.ndarray | list[float | int], northing: np.ndarray | list[float | int]
+) -> gpd.GeoSeries:
     """
     Parse arrays of coordinates.
 
     They are assumed to be either SWEREF99TM or RT90 2.5gon V, depending on the size of the easting coord.
+    Some cases also have local coordinates which are modified RT90 2.5gon V coordinates.
 
     :param easting: An array-like of easting coordinates.
     :param northing: An array-like of northing coordinates.
@@ -890,7 +1255,15 @@ def parse_coordinates(easting: np.ndarray, northing: np.ndarray) -> gpd.GeoSerie
     easting = np.asarray(easting)
     northing = np.asarray(northing)
 
+    # Generally (at least at Mårmaglaciären), the RT90 easting coordinate is very large (>1e6),
+    # ... thus separating it clearly from SWEREF99TM (<1e6)
+    # However, if the coordinate is tiny (lower than 10000), it's most likely a local coordinate
     if easting[0] < 1e4:
+        # The local coordinates are RT90 2.5gon V coordinates from the bottom left corner of the 1978 map.
+        # Their decimal point is also wrong, so they have to be multiplied by 10.
+        # How did I figure this out? Trial and error until it worked!
+        # It could be that the offsets should have been rounded (1618000, 7555500), but this is the corner-coordinate
+        # of the newly georeferenced 1978 map, so this is most likely the true offset.
         crs = 3021
         east_offset, north_offset = (1617990, 7555480)
         scale = 10
@@ -906,7 +1279,28 @@ def parse_coordinates(easting: np.ndarray, northing: np.ndarray) -> gpd.GeoSerie
     return gpd.points_from_xy((easting * scale) + east_offset, (northing * scale) + north_offset, crs=crs).to_crs(3006)
 
 
+def test_parse_coordinates():
+    """Test the parse_coordinates() function."""
+    # These coordinates should represent approximately the same place
+    marma_rt90 = 1621920, 7557435
+    marma_sweref = 655350, 7556847
+    marma_local = 393, 195.5
+
+    # Convert all to SWEREF99TM
+    converted_rt90 = parse_coordinates([marma_rt90[0]], [marma_rt90[1]])[0]
+    converted_sweref = parse_coordinates([marma_sweref[0]], [marma_sweref[1]])[0]
+    converted_local = parse_coordinates([marma_local[0]], [marma_local[1]])[0]
+
+    # Validate that the SWEREF99TM coordinate is exactly the same after conversion
+    assert marma_sweref[0] == converted_sweref.x and marma_sweref[1] == converted_sweref.y
+
+    # Validate that all coordinates represent the same spot (within 1 m)
+    assert np.mean(np.abs(np.diff([converted_rt90.x, converted_sweref.x, converted_local.x, marma_sweref[0]]))) < 1
+    assert np.mean(np.abs(np.diff([converted_rt90.y, converted_sweref.y, converted_local.y, marma_sweref[1]]))) < 1
+
+
 def test_is_number():
+    """Test the is_number() function."""
     assert is_number("9")
     assert not is_number("jgh")
 
