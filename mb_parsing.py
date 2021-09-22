@@ -38,7 +38,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 SURFACE_TYPES = ["s", "i", "ns", "si"]
 
@@ -1583,3 +1583,4 @@ if __name__ == "__main__":
     with tarfile.open("marma_mb.tar.gz", mode="w:gz") as tar:
         tar.add("output/", arcname="")
         tar.add("dems/", arcname="")
+        tar.add("outlines/", arcname="")
