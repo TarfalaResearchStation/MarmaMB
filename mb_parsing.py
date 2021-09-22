@@ -38,6 +38,8 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+__version__ = "0.0.1"
+
 SURFACE_TYPES = ["s", "i", "ns", "si"]
 
 
@@ -1571,12 +1573,13 @@ def test_is_number():
 
 if __name__ == "__main__":
     probings, stakes, densities = read_all_data(Path("massbalance/"))
-    shutil.rmtree("output/")
-    os.makedirs("output/", exist_ok=True)
+    if os.path.isdir("output"):
+        shutil.rmtree("output/")
+    os.mkdir("output")
     probings.to_file("output/probings.geojson", driver="GeoJSON")
     stakes.to_file("output/stakes.geojson", driver="GeoJSON")
     densities.to_csv("output/densities.csv", index=False)
 
     with tarfile.open("marma_mb.tar.gz", mode="w:gz") as tar:
-        tar.add("output/", arcname=os.path.basename("output/"))
-
+        tar.add("output/", arcname="")
+        tar.add("dems/", arcname="")
