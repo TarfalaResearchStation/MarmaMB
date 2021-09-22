@@ -1,0 +1,15 @@
+{
+"type": "FeatureCollection",
+"name": "stakes_digitized2",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3006" } },
+"features": [
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1993-08-26", "height": 410, "snow_depth": 0, "surface": null, "stake_length": 600, "note": "Tilting heavily" }, "geometry": { "type": "Point", "coordinates": [ 655067.850138825015165, 7556780.542732897214592 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1993-08-26", "height": 326, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653338.090343961492181, 7556080.713811634108424 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M1", "date": "1993-08-26", "height": 458, "snow_depth": 0, "surface": null, "stake_length": 600, "note": "New stake. Ext. moved to the old stake after this reading." }, "geometry": { "type": "Point", "coordinates": [ 652061.142230110592209, 7557034.270661415532231 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M1_old", "date": "1993-08-26", "height": 52, "snow_depth": null, "surface": null, "stake_length": null, "note": "Old stake extended by 1m after the reading." }, "geometry": { "type": "Point", "coordinates": [ 652102.045472996775061, 7556998.480323890224099 ] } },
+{ "type": "Feature", "properties": { "stake_id": "old1", "date": "1993-08-26", "height": 359, "snow_depth": null, "surface": null, "stake_length": null, "note": "Unknown origin." }, "geometry": { "type": "Point", "coordinates": [ 654172.772144106565975, 7556559.409576035104692 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M1", "date": "1993-04-09", "height": 243, "snow_depth": 575, "surface": "S", "stake_length": 600, "note": "Snow depth taken from the nearest probing" }, "geometry": { "type": "Point", "coordinates": [ 652061.142230110592209, 7557034.270661415532231 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1993-04-09", "height": 66, "snow_depth": 235, "surface": "S", "stake_length": null, "note": "Snow depth taken from the nearest probing" }, "geometry": { "type": "Point", "coordinates": [ 653338.090343961492181, 7556080.713811634108424 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1993-04-09", "height": 73, "snow_depth": 375, "surface": "S", "stake_length": null, "note": "Snow depth taken from the nearest probing" }, "geometry": { "type": "Point", "coordinates": [ 655067.850138825015165, 7556780.542732897214592 ] } }
+]
+}

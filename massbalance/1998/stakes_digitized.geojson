@@ -1,0 +1,15 @@
+{
+"type": "FeatureCollection",
+"name": "stakes_digitized2",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3006" } },
+"features": [
+{ "type": "Feature", "properties": { "stake_id": "M5", "date": "1998-05-05", "height": 180, "snow_depth": 190, "surface": "S", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652170.769417447270826, 7556894.264373062178493 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M4", "date": "1998-05-05", "height": 220, "snow_depth": 210, "surface": "S", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652917.727858102880418, 7555989.419784879311919 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1998-05-05", "height": 190, "snow_depth": 270, "surface": "S", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653401.542719541001134, 7556378.13363347761333 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1998-05-05", "height": 190, "snow_depth": 200, "surface": "S", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 654602.077592794783413, 7556698.984137961640954 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1998-08-25", "height": 500, "snow_depth": 0, "surface": "", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 654602.077592794783413, 7556698.984137961640954 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1998-08-25", "height": 480, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653401.542719541001134, 7556378.13363347761333 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M4", "date": "1998-08-25", "height": 495, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652917.727858102880418, 7555989.419784879311919 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M5", "date": "1998-08-25", "height": 200, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Extension had fallen off." }, "geometry": { "type": "Point", "coordinates": [ 652170.769417447270826, 7556894.264373062178493 ] } }
+]
+}

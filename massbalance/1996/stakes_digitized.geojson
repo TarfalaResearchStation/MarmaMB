@@ -1,0 +1,18 @@
+{
+"type": "FeatureCollection",
+"name": "stakes_digitized2",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3006" } },
+"features": [
+{ "type": "Feature", "properties": { "stake_id": "A-96", "date": "1996-09-07", "height": 239, "snow_depth": 0, "surface": null, "stake_length": null, "note": "New snow blown away by helicopter" }, "geometry": { "type": "Point", "coordinates": [ 652119.269704927341081, 7557301.05563485622406 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS3", "date": "1996-05-08", "height": 126, "snow_depth": 228, "surface": "S", "stake_length": null, "note": "MS3 is deduced based on: \"Standing beside B-94, which is tilting so B-94 was not measured.\"" }, "geometry": { "type": "Point", "coordinates": [ 653392.91189443517942, 7556226.479455159977078 ] } },
+{ "type": "Feature", "properties": { "stake_id": "A-96", "date": "1996-05-08", "height": 25, "snow_depth": 580, "surface": "S", "stake_length": null, "note": "Snow depth taken from nearest probing." }, "geometry": { "type": "Point", "coordinates": [ 652119.269704927341081, 7557301.05563485622406 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked1", "date": "1996-05-08", "height": 110, "snow_depth": 159, "surface": "S", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 654869.042365673114546, 7556688.49572557862848 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked1", "date": "1996-09-07", "height": 250, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Tilting heavily. Measured as between 212 cm and 250 cm depending on how you measure." }, "geometry": { "type": "Point", "coordinates": [ 654869.042365673114546, 7556688.49572557862848 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked2", "date": "1996-09-07", "height": 472, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 655151.01474431110546, 7556783.560698946937919 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked3", "date": "1996-09-07", "height": 135, "snow_depth": 13, "surface": "NS", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653416.750343127292581, 7556089.640102376230061 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked4", "date": "1996-09-07", "height": 172, "snow_depth": 0, "surface": "I", "stake_length": "", "note": null }, "geometry": { "type": "Point", "coordinates": [ 653937.190790555789135, 7556473.659627569839358 ] } },
+{ "type": "Feature", "properties": { "stake_id": "B-94", "date": "1996-05-08", "height": 100, "snow_depth": 178, "surface": "S", "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653414.064891902380623, 7556233.580288044176996 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked5", "date": "1996-05-08", "height": 121, "snow_depth": 175, "surface": "S", "stake_length": null, "note": "\"Rusty stake\". Snow depth taken from nearest probing." }, "geometry": { "type": "Point", "coordinates": [ 653445.7532163587166, 7556101.993178019300103 ] } },
+{ "type": "Feature", "properties": { "stake_id": "unmarked3", "date": "1996-05-08", "height": 107, "snow_depth": 175, "surface": "S", "stake_length": null, "note": "\"Rusty stake\". Snow depth taken from nearest probing. Probably same stake as \"unmarked3\"" }, "geometry": { "type": "Point", "coordinates": [ 653416.750343127292581, 7556089.640102376230061 ] } }
+]
+}

@@ -1,0 +1,21 @@
+{
+"type": "FeatureCollection",
+"name": "stakes_digitized2",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3006" } },
+"features": [
+{ "type": "Feature", "properties": { "stake_id": "MS0", "date": "1995-04-05", "height": 48, "snow_depth": 295, "surface": "S", "stake_length": null, "note": "Before extension" }, "geometry": { "type": "Point", "coordinates": [ 651983.173125219647773, 7556981.670340673066676 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS0", "date": "1995-04-05", "height": 348, "snow_depth": 295, "surface": "S", "stake_length": null, "note": "After extension" }, "geometry": { "type": "Point", "coordinates": [ 651983.173125219647773, 7556981.670340673066676 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS7", "date": "1995-04-05", "height": 72, "snow_depth": 227, "surface": "S", "stake_length": null, "note": "Also called C-95" }, "geometry": { "type": "Point", "coordinates": [ 654987.29721723345574, 7556770.36325550545007 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS6", "date": "1995-04-05", "height": 224, "snow_depth": 233, "surface": "S", "stake_length": null, "note": "Also called D-94" }, "geometry": { "type": "Point", "coordinates": [ 654678.158759413287044, 7556713.481258602812886 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS4", "date": "1995-04-05", "height": 107, "snow_depth": 240, "surface": "S", "stake_length": "", "note": "Also called B-94" }, "geometry": { "type": "Point", "coordinates": [ 653423.830544529831968, 7556236.380007859319448 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS5", "date": "1995-04-05", "height": 70, "snow_depth": 210, "surface": "S", "stake_length": null, "note": "Also called C-94. Tilting slightly" }, "geometry": { "type": "Point", "coordinates": [ 653940.881446238839999, 7556558.401739907450974 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS4", "date": "1995-08-21", "height": 357, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Also called B-94" }, "geometry": { "type": "Point", "coordinates": [ 653423.830544529831968, 7556236.380007859319448 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS1", "date": "1995-08-21", "height": 253, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652762.446301818126813, 7556025.343913543969393 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS8", "date": "1995-08-21", "height": 37, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 654325.130185507237911, 7556638.838876649737358 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS3", "date": "1995-08-21", "height": 387, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653393.190256573027, 7556225.462310655973852 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS6", "date": "1995-08-21", "height": 515, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Also called D-94" }, "geometry": { "type": "Point", "coordinates": [ 654678.158759413287044, 7556713.481258602812886 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS6", "date": "1995-09-03", "height": 525, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Also called D-94" }, "geometry": { "type": "Point", "coordinates": [ 654678.158759413287044, 7556713.481258602812886 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS7", "date": "1995-08-21", "height": 376, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Also called C-95" }, "geometry": { "type": "Point", "coordinates": [ 654987.29721723345574, 7556770.36325550545007 ] } },
+{ "type": "Feature", "properties": { "stake_id": "MS5", "date": "1995-09-03", "height": 350, "snow_depth": 0, "surface": null, "stake_length": null, "note": "Value in parenthesis with no explanation why. Uncertain value?" }, "geometry": { "type": "Point", "coordinates": [ 653940.881446238839999, 7556558.401739907450974 ] } }
+]
+}

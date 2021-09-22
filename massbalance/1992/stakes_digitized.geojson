@@ -1,0 +1,16 @@
+{
+"type": "FeatureCollection",
+"name": "stakes_digitized",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3006" } },
+"features": [
+{ "type": "Feature", "properties": { "stake_id": "M1", "date": "1992-09-02", "height": 321, "snow_depth": 0, "surface": null, "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 655205.806146924034692, 7556889.812311045825481 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1992-09-02", "height": 240, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653467.158591665094718, 7556491.741856741718948 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1992-09-02", "height": 324, "snow_depth": 0, "surface": null, "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653121.678424206911586, 7556003.697658696211874 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M4", "date": "1992-09-02", "height": 167, "snow_depth": 0, "surface": null, "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652048.329678358277306, 7557033.643577454611659 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M1", "date": "1992-04-16", "height": 30, "snow_depth": 268, "surface": "S", "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 655205.806146924034692, 7556889.812311045825481 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1992-04-16", "height": null, "snow_depth": 240, "surface": "S", "stake_length": 600, "note": "Stake could not be found" }, "geometry": { "type": "Point", "coordinates": [ 653467.158591665094718, 7556491.741856741718948 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1992-04-16", "height": 95, "snow_depth": 250, "surface": "S", "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653121.678424206911586, 7556003.697658696211874 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M4", "date": "1992-04-16", "height": 120, "snow_depth": 350, "surface": "S", "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652048.329678358277306, 7557033.643577454611659 ] } },
+{ "type": "Feature", "properties": { "stake_id": "old1", "date": "1992-09-02", "height": 382, "snow_depth": 0, "surface": null, "stake_length": null, "note": null }, "geometry": { "type": "Point", "coordinates": [ 655000.091581559390761, 7556767.572045834735036 ] } }
+]
+}

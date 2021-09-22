@@ -1,0 +1,13 @@
+{
+"type": "FeatureCollection",
+"name": "stakes_digitized",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3006" } },
+"features": [
+{ "type": "Feature", "properties": { "stake_id": "M1", "date": "1990-05-29", "height": 107, "snow_depth": 280, "surface": null, "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652158.0, 7557001.0 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1990-05-29", "height": 32, "snow_depth": 370, "surface": null, "stake_length": 400, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653607.0, 7556436.0 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1990-05-29", "height": -195, "snow_depth": 235, "surface": null, "stake_length": 400, "note": null }, "geometry": { "type": "Point", "coordinates": [ 654980.0, 7556807.0 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M1", "date": "1990-08-11", "height": 302, "snow_depth": 0, "surface": null, "stake_length": 600, "note": null }, "geometry": { "type": "Point", "coordinates": [ 652158.0, 7557001.0 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M2", "date": "1990-08-11", "height": 286, "snow_depth": 0, "surface": null, "stake_length": 400, "note": null }, "geometry": { "type": "Point", "coordinates": [ 653607.0, 7556436.0 ] } },
+{ "type": "Feature", "properties": { "stake_id": "M3", "date": "1990-08-11", "height": 113, "snow_depth": 0, "surface": null, "stake_length": 400, "note": null }, "geometry": { "type": "Point", "coordinates": [ 654980.0, 7556807.0 ] } }
+]
+}
