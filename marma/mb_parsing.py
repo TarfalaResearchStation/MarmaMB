@@ -14,7 +14,6 @@ The parsers themselves are mostly devoid of intepretation, unless it is explicit
 Some missing pieces of information are filled, such as:
     - Snow depth == 0 in August -> probably ice.
     - Density pits of equal depth as the probing depth at the top stake -> it was probably dug at the top stake.
-    - Snow depth is positive in September -> probably new snow.
     - A stake without a coordinate but with the same ID as one at the previous year -> they are at the same place.
     - A snow probing "taken in September" among others taken in May -> the date is probably wrong.
 
@@ -37,6 +36,10 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
+from marma.utilities import cache
+
+SURFACE_TYPES = ["s", "i", "ns", "si"]
+
 
 def standard_summer_date(year: int) -> datetime.date:
     """In case of a missing summer date, use this date as a placeholder."""
@@ -48,6 +51,7 @@ def standard_winter_date(year: int) -> datetime.date:
     return datetime.date(int(year), 5, 1)
 
 
+@cache(filename=Path("temp/mb_data.pkl"))
 def read_all_data(base_directory: Path):
     """
     Read the data from all years in the 'base_directory'.
@@ -112,21 +116,16 @@ def read_all_data(base_directory: Path):
         density_dfs.append(densities)
 
     # Concatenate the results and keep only the columns of interest.
-    densities = pd.concat(density_dfs, ignore_index=True)
+    densities = pd.concat(density_dfs, ignore_index=True)[["depth_cm", "density", "date", "parser", "location", "note", "profile_id", "geometry"]]
+    densities["density"] = densities["density"].astype(float)
     probings = pd.concat(probing_dfs, ignore_index=True)[["stake_id", "snow_depth_cm", "date", "geometry", "parser"]]
+
     stakes = pd.concat(stake_dfs, ignore_index=True)[
         ["stake_id", "stake_height_cm", "snow_depth_cm", "note", "surface", "date", "geometry", "parser"]
     ]
 
     # Stakes where no snow depth was reported is assumed to be 0
     stakes["snow_depth_cm"] = stakes["snow_depth_cm"].fillna(0)
-    # Filter the stakes and probings by whether measurements exist or not.
-    # TODO: Fix the parsers instead!
-    stakes = stakes[is_number(stakes["stake_height_cm"])]
-    probings = probings[~probings["snow_depth_cm"].isna()]
-    # Convert all datetimes to dates (times sometimes exist, but not always, and the timezone is unknown)
-    for dataframe in [stakes, probings]:
-        dataframe["date"] = dataframe["date"].apply(lambda d: d if isinstance(d, datetime.date) else d.date())
 
     # For some reason, the "nodata" version of a point is Point(inf, inf), which makes for really funny plots.
     stakes.loc[stakes["geometry"].apply(lambda p: ~np.isfinite(p.x) if p is not None else True), "geometry"] = pd.NA
@@ -135,18 +134,181 @@ def read_all_data(base_directory: Path):
     # try to find another measurement with the same stake_id that has a coordinate, and assign this.
     for dataframe in [stakes, probings]:
         for i, point in dataframe.loc[dataframe["geometry"].isna()].iterrows():
-            other_measurements = dataframe.loc[
-                (dataframe["stake_id"] == point["stake_id"]) & (~dataframe["geometry"].isna()), "geometry"
-            ]
+            other_measurements = pd.concat([df.loc[
+                (df["stake_id"] == point["stake_id"]) & (~df["geometry"].isna()), "geometry"
+            ] for df in [stakes, probings]])
             if np.size(other_measurements) == 0:
                 continue
             dataframe.loc[i, "geometry"] = other_measurements.iloc[0]
+
+    # Filter the stakes and probings by whether measurements exist or not.
+    # TODO: Fix the parsers instead!
+    stakes = stakes[is_number(stakes["stake_height_cm"]) & (is_number(stakes["snow_depth_cm"]) | stakes["snow_depth_cm"].isna())]
+    probings = probings[(~probings["geometry"].isna()) & (is_number(probings["snow_depth_cm"]))]
+
+    stakes.loc[stakes["surface"].apply(lambda s: isinstance(s, str) and len(s.strip()) == 0), "surface"] = None
+
+    surface_translations = {
+        "nysnö": "ns",
+        "snow": "s",
+        "ice": "i"
+    }
+    stakes["surface"] = stakes["surface"].str.lower()
+    stakes["surface"] = stakes["surface"].apply(lambda s: s if s not in surface_translations else surface_translations[s])
+
+    # Convert all datetimes to dates (times sometimes exist, but not always, and the timezone is unknown)
+    for dataframe in [stakes, probings]:
+        dataframe["date"] = dataframe["date"].apply(lambda d: d if isinstance(d, datetime.date) else d.date())
 
     # Make sure the stakes and probings are proper GeoDataFrames
     stakes = gpd.GeoDataFrame(stakes, crs=3006)
     probings = gpd.GeoDataFrame(probings, crs=3006).sort_values("date")
 
+
+    #validate_data(probings, stakes, densities)
+    interpret_data(probings, stakes, densities)
+
     return probings, stakes, densities
+
+def validate_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densities: pd.DataFrame) -> None:
+    """Validate the probing, stake and density data."""
+
+    # Loop over all dataframes and check for data gaps. Then do individual validations.
+    for dataframe, name in [(probings, "probings"), (stakes, "stakes"), (densities, "densities")]:
+        previous_year = None
+        # Check for data gaps. There is a known 2010 data gap in the density series.
+        for year in sorted(dataframe["date"].apply(lambda d: d.year).unique()):
+            if all([previous_year is not None, (year - (previous_year or 0)) > 1, year != 2010 and name != "densities"]):
+                raise ValueError(f"Year gap for {name} between {previous_year} and {year}")
+            previous_year = year
+
+            data = dataframe.loc[dataframe["date"].apply(lambda d: d.year) == year]
+
+            if name == "densities":
+                # Check that the amount of pits correspond to the amount of unique pit identifiers
+                left = data["depth_cm"].apply(lambda i: i.left)
+                # The amount of pit tops is when the count of the minimum depth values (most often 0 cm)
+                n_starts = left[left == left.min()].shape[0]
+                # The amount of locations is the unique count of location, id and geometry combinations
+                n_locations = data[["location", "profile_id", "geometry"]].astype(str).sum(axis=1).unique().shape[0]
+
+                # If this doesn't match, a label is missing
+                if n_starts != n_locations:
+                    raise ValueError(f"Unequal pit starts ({n_starts}) compared to unique locations ({n_locations}): {data}")
+
+
+            # Validate that all stakes and probings have coordinates
+            if name in ["stakes", "probings"]:
+                if not np.all(np.isfinite(data.geometry.x)):
+                    raise ValueError(f"Missing geometry columns:\n{data[~np.isfinite(data.geometry.x)]}")
+            if name == "stakes":
+                # Validate that no unexpected surface names exist.
+                surfaces = data["surface"].unique()
+                for surface in surfaces:
+                    if pd.isna(surface):
+                        continue
+                    if surface not in ["s", "ns", "i", "si"]:
+                        raise ValueError(f"Unknown surface type: {surface}")
+
+                # Check that the theoretical minimum of two summer and winter stake readings exist.
+                winter_measurements = data.loc[data["date"].apply(lambda d: d.month < 6)]
+                summer_measurements = data.loc[data["date"].apply(lambda d: d.month > 6)]
+                # At least two stakes need to have both winter and summer measuements (hence the overlapping)
+                overlapping = summer_measurements.set_index("stake_id")["stake_height_cm"] - winter_measurements.set_index("stake_id")["stake_height_cm"]
+                overlapping = overlapping[~overlapping.isna()]
+                for subset_data, subset in [(winter_measurements, "winter"), (summer_measurements, "summer"), (overlapping, "overlapping")]:
+                    if subset_data.shape[0] < 2:
+                        raise ValueError(f"{year} has too few {subset} stakes: {subset_data.shape[0]}")
+
+                # A 6 m difference or a negative difference (winter higher than summer) is impossible/improbable
+                if any(overlapping.abs()) > 6 or any(overlapping < 0.0):
+                    raise ValueError(f"Unreasonable stake dfference:\n{overlapping}")
+
+
+def interpret_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densities: pd.DataFrame) -> None:
+    """Modify the dataframes inplace and add data that are reasonable."""
+    # Fill in missing stake heights, snow depths, and surface types.
+    for i, stake in stakes.iterrows():
+        # If no valid stake height exists, it's most likely 6m
+        if not is_number(stake["stake_height_cm"]):
+            stakes.loc[i, "stake_height_cm"] = 600
+
+        # For winter data
+        if stake["date"].month < 6:
+            # If no surface info exists but there is snow, set the surface as snow
+            if stake["surface"] not in SURFACE_TYPES and float(stake["snow_depth_cm"]) > 0:
+                stakes.loc[i, "surface"] = "s"
+        # For summer data
+        elif stake["date"].month >= 6:
+            # If the stake doesn't have an associated snow depth, it's probably bare ice
+            if not is_number(stake["snow_depth_cm"]):
+                stakes.loc[i, "snow_depth_cm"] = 0
+            if stake["surface"] not in SURFACE_TYPES:
+                # If no surface info exists but there is snow, set the surface as snow
+                if float(stake["snow_depth_cm"]) > 0:
+                    stakes.loc[i, "surface"] = "s"
+                # OtherwICE set it as ice
+                else:
+                    stakes.loc[i, "surface"] = "i"
+
+    densities.loc[densities["note"].isna(), "note"] = ""
+
+    # Associate coordinates with all density pits.
+    for year in densities["date"].apply(lambda d: d.year).unique():
+        year_data = densities.loc[densities["date"].apply(lambda d: d.year) == year]
+        # Extract the winter stake readings from the same year.
+        year_stakes = stakes.loc[stakes["date"].apply(lambda d: d.year == year and d.month < 6)].copy()
+        # If the pit(s) already have coordinates, go to the next one
+        if (~year_data["geometry"].isna()).all():
+            continue
+
+        # Sort the stakes from west to east (westernmost is assumed to be farthest up)
+        year_stakes = year_stakes.iloc[np.argsort([geom.x for geom in year_stakes.geometry.values])]
+
+        # If there is only one pit, assume that it is taken from the highest measured stake
+        if np.unique(year_data[["location", "profile_id"]].astype(str).sum(axis=1)).shape[0] == 1:
+            densities.loc[year_data.index, "geometry"] = repeat_geometry(year_stakes["geometry"].iloc[0], year_data.shape[0])
+            densities.loc[year_data.index, "note"] += " Location assumed to be at the stake highest in the accumulation area."
+            continue
+
+        # If there are multiple pits and they have locations corresponding to stake names, use those stakes
+        if any(loc in year_stakes["stake_id"].values for loc in year_data["location"]):
+            for i, stake in year_stakes.iterrows():
+                overlapping = densities["location"] == stake["stake_id"]
+                if np.count_nonzero(overlapping) == 0:
+                    continue
+                densities.loc[overlapping, "geometry"] = repeat_geometry(stake["geometry"], np.count_nonzero(overlapping))
+
+        # At this point, all single pits and those with associated stake names have gotten coordinates.
+        # Now, there will only be one left (based on visual inspection), and will be assigned to the highest stake.
+        # It didn't seem like the year_data was updated by the last call, so make a new view
+        year_data = densities.loc[densities["date"].apply(lambda d: d.year) == year]
+
+        nans = year_data[year_data["geometry"].isna()].index
+        densities.loc[nans, "geometry"] = repeat_geometry(year_stakes["geometry"].iloc[0], nans.shape[0])
+        densities.loc[nans, "note"] += " Location assumed to be at the stake highest in the accumulation area."
+
+    if (~np.isfinite(densities["geometry"])).any():
+        raise NotImplementedError(densities)
+
+
+def repeat_geometry(geometry: object, repeats: int) -> np.ndarray:
+    """
+    Repeat the given geometry object N times.
+
+    This is needed as e.g. np.array([geom] * 10) triggers warnings about not respecting the __array_interface__ of geom.
+
+    :param geometry: Any object to be repeated.
+    :param repeats: The number of repeats.
+
+    :returns: A numpy array with the repeated objects.
+    """
+    geom_arr = np.empty(repeats, dtype=object)
+    for i in range(geom_arr.shape[0]):
+        geom_arr[i] = geometry
+
+    return geom_arr
+
 
 
 def figure_out_version(
@@ -173,6 +335,8 @@ def figure_out_version(
             return parse_2017_version(data, year)
         if all(key in data for key in ["Density", "Stake ablation", "Probing data"]):
             return parse_2016_version(data, year)
+        if all(key in data for key in ["Density", "Summer balance calc", "Probing data", "ablation"]):
+            return parse_2011_version(data, year)
         if all(key in data for key in ["Density", "Summer balance calc", "Probing data"]):
             return parse_2013_version(data, year)
         if all(key in data for key in ["Density", "Stakar", "sond"]):
@@ -839,6 +1003,60 @@ def parse_2005_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     return probings, stakes, densities
 
 
+def parse_2011_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Parse the "2013" data format.
+
+    The 2011 data format is exactly the same as in 2013, but the late-summer stake readings are missing.
+    The ablation values exist, however, so these can be used to back-track the stake readings.
+
+    :param data: The data to parse.
+    :param year: Which year the data is associated with.
+
+    :returns: The probings, stakes and densities of that year.
+    """
+    probings, stakes, densities = parse_2013_version(data, year=year)
+
+    # Sort by date so the winter reading can be extracted easily (the first matching value)
+    stakes.sort_values("date", inplace=True)
+    # Initialize the note column
+    stakes["note"] = pd.NA
+
+    # This is the ablation per stake in meters
+    ablation = pd.read_csv(io.StringIO("\n".join(data["ablation"])), index_col=0, squeeze=True)
+
+    # The mean (average weighted by sample length) density will be used to get the w.e. of the snow
+    mean_density = np.average(
+        densities["density"].astype(float), weights=densities["depth_cm"].apply(lambda i: i.length)
+    )
+
+    for stake_id, abl in ablation.iteritems():
+        winter_reading = stakes.loc[stakes["stake_id"] == stake_id].iloc[0].copy()
+        winter_reading["winter_snow_we"] = winter_reading["snow_depth_cm"] * mean_density
+
+        # Based on experimentation, no snow was retained, so this doesn't have to be as convoluted as 2003
+        if winter_reading["winter_snow_we"] > abl * 100:
+            raise NotImplementedError("An assumption was made that all snow was lost")
+
+        # The summer height is the ablation (conv. to cm) minus snow in w.e., then the density is applied
+        summer_height = (abl * 100 - winter_reading["winter_snow_we"]) / 0.9
+
+        # Find the summer value in the stakes dataframe and assign the calculated value
+        stakes.loc[
+            (stakes["stake_id"] == stake_id) & (stakes["date"].apply(lambda d: d.month > 6)),
+            ["stake_height_cm", "note"],
+        ] = (
+            summer_height,
+            (
+                "The stake reading is missing, but the calculated ablation value exists."
+                "The reading was back-calculated using the mean snow density and an ice density of 0.9"
+            ),
+        )
+
+    stakes["parser"] = "2011_version"
+    return probings, stakes, densities
+
+
 def parse_2013_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Parse the "2013" data format.
@@ -876,18 +1094,21 @@ def parse_2013_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes["geometry"] = parse_coordinates(stakes["Easting"], stakes["Northing"])
 
     stakes_w = stakes[["Stake", "HW", "DW", "geometry"]].rename(
-        columns={"stake_id": "Stake", "HW": "stake_height_cm", "DW": "snow_depth_cm"}
+        columns={"Stake": "stake_id", "HW": "stake_height_cm", "DW": "snow_depth_cm"}
     )
-    stakes_w["surface"] = "s"
+    stakes_w["surface"] = "S"
     stakes_w["date"] = winter_date
 
     stakes_s = stakes[["Stake", "HL", "Surface", "geometry"]].rename(
-        columns={"stake_id": "Stake", "HL": "stake_height_cm", "Surface": "surface"}
+        columns={"Stake": "stake_id", "HL": "stake_height_cm", "Surface": "surface"}
     )
     stakes_s["snow_depth_cm"] = 0.0
     stakes_s["date"] = standard_summer_date(year)
 
     stakes = pd.concat([stakes_w, stakes_s])
+
+    # Convert from m to cm
+    stakes[["stake_height_cm", "snow_depth_cm"]] *= 100
 
     # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
@@ -911,9 +1132,21 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     :returns: The probings, stakes and densities of that year.
     """
     # Densities are made first (in 2016, only the densities have a winter date)
-    densities = data["Density"]
-    densities = set_header(densities, ["From", "To", "Density"])
-    densities = densities[is_number(densities["Density"])]
+    # In 2008, there are two sheets, whereby the proper density data are in Density_1
+    # Therefore, loop through both and identify where data exist.
+    for key in ["Density", "Density_1"]:
+        if key not in data:
+            continue
+        densities = data[key]
+        densities = set_header(densities, ["From", "To", "Density"])
+        densities = densities[is_number(densities["Density"])]
+        if densities["Density"].isna().all():
+            continue
+        break
+    else:
+        if year != 2010:  # 2010 doesn't have density measurements
+            raise ValueError("Could not find valid density values.")
+
     if densities.shape[0] > 0:
         densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["From"], densities["To"])
         densities = densities[["depth_cm", "Density"]].rename(columns={"Density": "density"})
@@ -1014,7 +1247,7 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
             summer_date = pd.Timestamp(year=year, month=int(month), day=int(day))
 
         # TODO: Explain what's going on here. I'm lost!
-        if winter_date < previous_date and col != "HS":
+        if summer_date < previous_date and col != "HS":
             summer_date = pd.Timestamp(year=summer_date.year + 1, month=summer_date.month, day=summer_date.day)
 
         previous_date = summer_date
@@ -1028,7 +1261,7 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         # Remove rows where no stake height exists
         subset = subset[~subset.iloc[:, 0].isna()]
         subset.columns = ["height", "surface", "Stake"]
-        subset["date"] = winter_date
+        subset["date"] = summer_date 
 
         stakes = pd.concat([stakes, subset], ignore_index=True)
 
@@ -1074,6 +1307,8 @@ def parse_2017_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     probings = set_header(probings, ["Date", "Punkt"])
     probings.columns = ["date", "stake_id", "snow_depth_cm", "note"]
     probings["date"] = date
+    # It does not contain coordinates, but adding the M allows comparison with 2019 coordinates
+    #probings["stake_id"] = "M" + probings["stake_id"]
 
     stakes = set_header(data["Mårma stakes"], ["Date", "ID", "Snow Depth"])
     columns = {
@@ -1265,6 +1500,7 @@ def parse_coordinates(
         # It could be that the offsets should have been rounded (1618000, 7555500), but this is the corner-coordinate
         # of the newly georeferenced 1978 map, so this is most likely the true offset.
         crs = 3021
+
         east_offset, north_offset = (1617990, 7555480)
         scale = 10
     elif easting[0] < 1e6:
@@ -1303,5 +1539,6 @@ def test_is_number():
     """Test the is_number() function."""
     assert is_number("9")
     assert not is_number("jgh")
+    assert not is_number(">500")
 
     assert np.array_equal(is_number(["9", "ladw"]), [True, False])

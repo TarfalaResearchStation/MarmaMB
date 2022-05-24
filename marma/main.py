@@ -11,7 +11,7 @@ def prepare_dems(reference_year: int, cache: bool = True):
     gis_dir = pathlib.Path("GIS/")
     cache_dir = temp_dir.joinpath("cache")
 
-    cache_valid = True
+    cache_valid = cache
     try:
         cache_files = os.listdir(cache_dir)
     except FileNotFoundError:

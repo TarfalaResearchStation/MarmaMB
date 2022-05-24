@@ -4,16 +4,28 @@ import contextlib
 import datetime
 import io
 import warnings
+import tempfile
+from pathlib import Path
 
+import autosklearn.regression
 import geoutils as gu
 import matplotlib.pyplot as plt
 import numba
 import numpy as np
 import pandas as pd
 import scipy.interpolate
+import scipy.stats
+import sklearn
+import sklearn.pipeline
+import sklearn.preprocessing
 import xdem
 from numpy.lib import stride_tricks
 from tqdm import tqdm
+
+import marma
+import marma.inputs
+import marma.main
+import marma.mb_parsing
 
 
 def generate_ddems(dems: dict[int, xdem.DEM], max_interpolation_distance: float = 200) -> list[xdem.dDEM]:
@@ -152,7 +164,7 @@ def get_spatially_correlated_nmad(
     assert np.any(np.isfinite(norm_dh))
 
     # Remove extreme outliers as this may mess with the result.
-    norm_dh[np.abs(norm_dh) > (4 * xdem.spatial_tools.nmad(norm_dh))] = np.nan
+    norm_dh[np.abs(norm_dh) > (4 * xdem.spatialstats.nmad(norm_dh))] = np.nan
 
     # The full area of the raster (the pixel count times the pixel area)
     scene_area = np.prod(ddem.shape) * np.prod(ddem.res)
@@ -161,7 +173,7 @@ def get_spatially_correlated_nmad(
     areas = 10.0 ** np.linspace(-1, np.log10(scene_area) - 0.5, steps)
 
     # Remove areas that are smaller than five pixels (because each cell needs some friends for a good NMAD)
-    #areas = areas[(areas > np.prod(ddem.res) * 5)]
+    # areas = areas[(areas > np.prod(ddem.res) * 5)]
 
     # The kernel sizes will be the pixel width of the area rectangles
     kernel_sizes = (np.sqrt(areas) / np.mean(ddem.res)).astype(int)
@@ -171,7 +183,7 @@ def get_spatially_correlated_nmad(
 
     variance = pd.DataFrame(dtype=float)
     variance.index.name = "area"
-    full_nmad = xdem.spatial_tools.nmad(norm_dh)
+    full_nmad = xdem.spatialstats.nmad(norm_dh)
 
     progress_bar = tqdm(total=n_samples.sum(), disable=not progress)
     for i, area in enumerate(areas):
@@ -184,14 +196,14 @@ def get_spatially_correlated_nmad(
         if np.all(~np.isfinite(means)):
             continue
 
-        nmad = xdem.spatial_tools.nmad(means)
+        nmad = xdem.spatialstats.nmad(means)
 
         finite_means = means[np.isfinite(means)]
         np.random.shuffle(finite_means)
 
         nmads_sub = np.array(
             [
-                xdem.spatial_tools.nmad(arr)
+                xdem.spatialstats.nmad(arr)
                 for arr in np.array_split(finite_means, max(1, int(finite_means.size * 0.04)))
                 if np.any(np.isfinite(arr))
             ]
@@ -275,7 +287,7 @@ def error(
                 list_var=[slope_arr, maxc_arr],
                 list_var_names=["slope", "maxc"],
                 list_var_bins=custom_bins,
-                statistics=["count", xdem.spatial_tools.nmad],
+                statistics=["count", xdem.spatialstats.nmad],
             ),
             list_var_names=["slope", "maxc"],
             min_count=30,
@@ -286,7 +298,7 @@ def error(
 
         # Standardize by the error, remove snow/ice values, and remove large outliers.
         standardized_dh = np.where(~stable_terrain_mask, np.nan, ddem.data / ddem.error)
-        standardized_dh[np.abs(standardized_dh) > (4 * xdem.spatial_tools.nmad(standardized_dh))] = np.nan
+        standardized_dh[np.abs(standardized_dh) > (4 * xdem.spatialstats.nmad(standardized_dh))] = np.nan
 
         standardized_std = np.nanstd(standardized_dh)
 
@@ -375,8 +387,144 @@ def volume_change(ddems: list[xdem.dDEM], outlines: gu.Vector):
         }
     vol_change = pd.DataFrame(vol_change_data).T
 
-    #vol_change["dh_error"] = vol_change["topographic_error"] + vol_change["spatially_correlated_error"]
+    # vol_change["dh_error"] = vol_change["topographic_error"] + vol_change["spatially_correlated_error"]
     vol_change["mean_dv"] = vol_change["mean_dh"] * vol_change["merged_area"]
     vol_change["dv_error"] = vol_change["dh_error"] * vol_change["merged_area"]
 
     return vol_change
+
+
+class InterpolatedDEM:
+    def __init__(self, dems: dict[int, xdem.DEM]):
+        self.dems = dems
+
+    def interpolate(self, year: int | float) -> np.ndarray:
+        if year in self.dems:
+            return self.dems[year].data.squeeze()
+
+        years = np.array(list(self.dems.keys())).astype(float)
+
+        lower_year = years[years < year].max()
+        upper_year = years[years > year].min()
+
+        relative_weight = (year - lower_year) / (upper_year - lower_year)
+
+        lower_data = self.dems[int(lower_year)].data.squeeze()
+        upper_data = self.dems[int(upper_year)].data.squeeze()
+
+        valid_values = np.isfinite(lower_data).astype(int) & np.isfinite(upper_data).astype(int)
+
+        data = np.where(
+            valid_values,
+            np.average([lower_data, upper_data], axis=0, weights=[1 - relative_weight, relative_weight]),
+            np.nansum([lower_data, upper_data], axis=0),
+        )
+
+        return data
+
+    def sample(self, easting: np.ndarray, northing: np.ndarray, year: int | float) -> np.ndarray:
+        rows, cols = [arr.round(0).astype(int) for arr in self.dems.xy2ij(easting, northing)]
+
+        return self.interpolate(year)[rows, cols]
+
+
+def snow_probings():
+    probings, stakes, densities = marma.mb_parsing.read_all_data()
+
+    storgl = pd.read_csv(
+        "input/SITES_GL-MB_TRS_SGL_1946-2020_L2_annual.csv", skiprows=22, index_col="TIMESTAMP"
+    ).astype(float)
+
+    probings["year"] = probings["date"].apply(lambda d: d.year)
+    densities["year"] = densities["date"].apply(lambda d: d.year)
+
+    probings["x"] = probings.geometry.x
+    probings["y"] = probings.geometry.y
+
+    dems, _, _ = marma.main.prepare_dems(2016)
+
+    tdem = InterpolatedDEM(dems)
+    
+
+    attributes = ["slope", "planform_curvature", "profile_curvature"]
+
+
+    for year, data in tqdm(probings.groupby("year", as_index=False), desc="Preparing data"):
+
+        yearly_density = densities[densities["year"] == year]
+        if yearly_density.shape[0] == 0:
+            yearly_density = densities
+
+        mean_density = np.average(
+            yearly_density["density"].astype(float), weights=yearly_density["depth_cm"].apply(lambda i: i.length)
+        )
+        probings.loc[data.index, "snow_depth_we"] = data["snow_depth_cm"] * mean_density
+
+        dem = tdem.interpolate(year)
+
+        rows, cols = [arr.round(0).astype(int) for arr in dems[2016].xy2ij(data["geometry"].x, data["geometry"].y)]
+        probings.loc[data.index, "storgl_wb"] = storgl.loc[year, "MB_W"]
+
+        probings.loc[data.index, "dem"] = dem[rows, cols]
+
+        attribute_data = dict(zip(attributes, xdem.terrain.get_terrain_attribute(dem, resolution=dems[2016].res[0], attribute=attributes)))
+
+        for attribute in attributes:
+            probings.loc[data.index, attribute] = attribute_data[attribute][rows, cols]
+
+        probings["snow_depth_we"] = probings["snow_depth_we"].astype(float)
+
+    train_cols = attributes + ["dem", "storgl_wb"]
+    x_train, x_test, y_train, y_test = sklearn.model_selection.train_test_split(
+        probings[train_cols].values, probings["snow_depth_we"].values, random_state=1
+    )
+
+    automl = autosklearn.regression.AutoSklearnRegressor(
+        time_left_for_this_task=120,
+        per_run_time_limit=30,
+        n_jobs=-1,
+    )
+
+    automl.fit(x_train, y_train, dataset_name="snow_depth")
+
+    train_predictions = automl.predict(x_train)
+    print("Train R2 score:", sklearn.metrics.r2_score(y_train, train_predictions))
+    test_predictions = automl.predict(x_test)
+    print("Test R2 score:", sklearn.metrics.r2_score(y_test, test_predictions))
+
+    for year in storgl.index:
+        if year < 1959:
+            continue
+        # xcoords, ycoords = dem.coords(offset="center")
+        storgl_wb = [storgl.loc[year, "MB_W"]] * dem.size
+        dem = tdem.interpolate(year)
+
+        attribute_data = dict(zip(attributes, xdem.terrain.get_terrain_attribute(dem, resolution=dems[2016].res[0], attribute=attributes)))
+
+        x_values = [attribute_data[key].ravel() for key in attributes] + [dem.ravel(), storgl_wb]
+
+        prediction = automl.predict(np.transpose(x_values)).reshape(dem.shape)
+
+        plt.imshow(prediction)
+        plt.show()
+
+    # plt.scatter(probings["snow_depth_norm"], predictions, alpha=0.3)
+    # plt.show()
+
+def ablation():
+    probings, stakes, densities = marma.mb_parsing.read_all_data(Path("input/massbalance"))
+
+    storgl = pd.read_csv(
+        "input/SITES_GL-MB_TRS_SGL_1946-2020_L2_annual.csv", skiprows=22, index_col="TIMESTAMP"
+    ).astype(float)
+
+    for data in [probings, densities, stakes]:
+        data["year"] = data["date"].apply(lambda d: d.year)
+
+    print(probings[probings["year"] == 2008])
+
+    mean_densities = densities.groupby("year").apply(lambda df: np.average(df["density"].astype(float), weights=df["depth_cm"].apply(lambda i: i.length)))
+
+    mean_densities[2010] = mean_densities.mean()
+
+

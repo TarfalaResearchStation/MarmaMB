@@ -91,7 +91,7 @@ def load_all_inputs(gis_data_path: Path, temp_path: Path, reference_grid_year: i
         if year == 2016:
             return load_dem(gis_data_path.joinpath("rasters/Marma_DEM_2016.tif").__str__(), conform_to=dems[reference_grid_year])
         if year == 2021:
-            return load_dem(temp_path.joinpath("marma_DEM_2021_20210810.tif").__str__(), conform_to=dems[reference_grid_year])
+            return load_dem(gis_data_path.joinpath("rasters/marma_DEM_2021_20210810.tif").__str__(), conform_to=dems[reference_grid_year])
 
     dems[reference_grid_year] = load_one_dem(reference_grid_year)
 
