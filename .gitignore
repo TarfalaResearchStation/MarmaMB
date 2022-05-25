@@ -2,3 +2,6 @@ Marma.*
 temp/
 *__pycache__*
 .env
+TODO
+output/
+.vim/

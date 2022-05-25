@@ -9,30 +9,48 @@ import marma.mb_parsing
 import marma.analysis
 import marma.plotting
 
+import os
 import pickle
 import pdb
+import warnings
 
 
 def main():
 
+    warnings.simplefilter("error")
     
-    mb = marma.mb_parsing.read_all_data(pathlib.Path("input/massbalance/"))
-    marma.analysis.snow_probings()
+    probings, stakes, densities = marma.mb_parsing.read_all_data(pathlib.Path("input/massbalance/"))
+
+    for data in [probings, stakes, densities]:
+        data["easting"] = data["geometry"].apply(lambda p: p.x)
+        data["northing"] = data["geometry"].apply(lambda p: p.y)
 
     reference_year = 2016
 
     dems, ddems, unstable_terrain = marma.main.prepare_dems(reference_year=reference_year)
 
-    dem_2021_interp = dems[reference_year] - filter(lambda ddem: ddem.end_time.year == 2021 and ddem.start_time.year == reference_year, ddems).__next__()
-
-
+    dem_2021_interp = dems[reference_year] + filter(lambda ddem: ddem.end_time.year == 2021 and ddem.start_time.year == reference_year, ddems).__next__()
 
     changes = marma.analysis.volume_change(ddems, unstable_terrain)
 
     changes["mean_area"] = changes[["start_area", "end_area"]].mean(axis=1)
-
     changes["mb"] = (changes["mean_dv"] / changes["mean_area"]) * 0.85
     changes["mb_err"] = np.sqrt((changes["dv_error"] / changes["mean_area"]) ** 2 + ((changes["mb"] / 0.85) * 0.06) ** 2)
+    changes["start_year"] = changes.index.left
+    changes["end_year"] = changes.index.right
+
+    creation_options = {"COMPRESS": "DEFLATE", "ZLEVEL": 12, "PREDICTOR": 3, "TILED": True, "NUM_THREADS": "ALL_CPUS"}
+
+    os.makedirs("output/", exist_ok=True)
+    for year in dems:
+        dems[year].save(f"output/Marma_DEM_{year}.tif", co_opts=creation_options)
+
+    dem_2021_interp.save("output/Marma_DEM_2021_interp.tif", co_opts=creation_options)
+
+    probings.to_csv("output/Marma_probings_1990-2021.csv", index=False)
+    stakes.to_csv("output/Marma_stakes_1990-2021.csv", index=False)
+    densities.to_csv("output/Marma_densities_1990-2021.csv", index=False)
+    changes.to_csv("output/Marma_geodetic_1959-2021.csv", index=False)
     print(changes.iloc[-1])
 
     print(changes)
