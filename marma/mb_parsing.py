@@ -35,20 +35,21 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely.geometry
 
 from marma.utilities import cache
 
 SURFACE_TYPES = ["s", "i", "ns", "si"]
 
 
-def standard_summer_date(year: int) -> datetime.date:
+def standard_summer_date(year: int) -> pd.Timestamp:
     """In case of a missing summer date, use this date as a placeholder."""
-    return datetime.date(int(year), 9, 1)
+    return pd.Timestamp(year=int(year), month=9, day=1)
 
 
-def standard_winter_date(year: int) -> datetime.date:
+def standard_winter_date(year: int) -> pd.Timestamp:
     """In case of a missing winter date, use this date as a placeholder."""
-    return datetime.date(int(year), 5, 1)
+    return pd.Timestamp(year=int(year), month=5, day=1)
 
 
 @cache(filename=Path("temp/mb_data.pkl"))
@@ -116,7 +117,9 @@ def read_all_data(base_directory: Path):
         density_dfs.append(densities)
 
     # Concatenate the results and keep only the columns of interest.
-    densities = pd.concat(density_dfs, ignore_index=True)[["depth_cm", "density", "date", "parser", "location", "note", "profile_id", "geometry"]]
+    densities = pd.concat(density_dfs, ignore_index=True)[
+        ["depth_cm", "density", "date", "parser", "location", "note", "profile_id", "geometry"]
+    ]
     densities["density"] = densities["density"].astype(float)
     probings = pd.concat(probing_dfs, ignore_index=True)[["stake_id", "snow_depth_cm", "date", "geometry", "parser"]]
 
@@ -128,33 +131,40 @@ def read_all_data(base_directory: Path):
     stakes["snow_depth_cm"] = stakes["snow_depth_cm"].fillna(0)
 
     # For some reason, the "nodata" version of a point is Point(inf, inf), which makes for really funny plots.
-    stakes.loc[stakes["geometry"].apply(lambda p: ~np.isfinite(p.x) if p is not None else True), "geometry"] = pd.NA
+    try:
+        stakes.loc[stakes["geometry"].apply(lambda p: ~np.isfinite(p.x) if p is not None else True), "geometry"] = pd.NA
+    # If no infs exist, an index out of range error is raised for a reason I can't figure out, so just skip it
+    except IndexError:
+        pass
 
     # For all stakes and probings, if they are missing a coordinate but have an associated stake_id,
     # try to find another measurement with the same stake_id that has a coordinate, and assign this.
     for dataframe in [stakes, probings]:
         for i, point in dataframe.loc[dataframe["geometry"].isna()].iterrows():
-            other_measurements = pd.concat([df.loc[
-                (df["stake_id"] == point["stake_id"]) & (~df["geometry"].isna()), "geometry"
-            ] for df in [stakes, probings]])
+            other_measurements = pd.concat(
+                [
+                    df.loc[(df["stake_id"] == point["stake_id"]) & (~df["geometry"].isna()), "geometry"]
+                    for df in [stakes, probings]
+                ]
+            )
             if np.size(other_measurements) == 0:
                 continue
             dataframe.loc[i, "geometry"] = other_measurements.iloc[0]
 
     # Filter the stakes and probings by whether measurements exist or not.
     # TODO: Fix the parsers instead!
-    stakes = stakes[is_number(stakes["stake_height_cm"]) & (is_number(stakes["snow_depth_cm"]) | stakes["snow_depth_cm"].isna())]
+    stakes = stakes[
+        is_number(stakes["stake_height_cm"]) & (is_number(stakes["snow_depth_cm"]) | stakes["snow_depth_cm"].isna())
+    ]
     probings = probings[(~probings["geometry"].isna()) & (is_number(probings["snow_depth_cm"]))]
 
     stakes.loc[stakes["surface"].apply(lambda s: isinstance(s, str) and len(s.strip()) == 0), "surface"] = None
 
-    surface_translations = {
-        "nysnö": "ns",
-        "snow": "s",
-        "ice": "i"
-    }
+    surface_translations = {"nysnö": "ns", "snow": "s", "ice": "i"}
     stakes["surface"] = stakes["surface"].str.lower()
-    stakes["surface"] = stakes["surface"].apply(lambda s: s if s not in surface_translations else surface_translations[s])
+    stakes["surface"] = stakes["surface"].apply(
+        lambda s: s if s not in surface_translations else surface_translations[s]
+    )
 
     # Convert all datetimes to dates (times sometimes exist, but not always, and the timezone is unknown)
     for dataframe in [stakes, probings]:
@@ -164,21 +174,22 @@ def read_all_data(base_directory: Path):
     stakes = gpd.GeoDataFrame(stakes, crs=3006)
     probings = gpd.GeoDataFrame(probings, crs=3006).sort_values("date")
 
-
-    #validate_data(probings, stakes, densities)
     interpret_data(probings, stakes, densities)
+    validate_data(probings, stakes, densities)
 
     return probings, stakes, densities
 
+
 def validate_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densities: pd.DataFrame) -> None:
     """Validate the probing, stake and density data."""
-
     # Loop over all dataframes and check for data gaps. Then do individual validations.
     for dataframe, name in [(probings, "probings"), (stakes, "stakes"), (densities, "densities")]:
         previous_year = None
         # Check for data gaps. There is a known 2010 data gap in the density series.
         for year in sorted(dataframe["date"].apply(lambda d: d.year).unique()):
-            if all([previous_year is not None, (year - (previous_year or 0)) > 1, year != 2010 and name != "densities"]):
+            if all(
+                [previous_year is not None, (year - (previous_year or 0)) > 1, year != 2010 and name != "densities"]
+            ):
                 raise ValueError(f"Year gap for {name} between {previous_year} and {year}")
             previous_year = year
 
@@ -193,9 +204,12 @@ def validate_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densitie
                 n_locations = data[["location", "profile_id", "geometry"]].astype(str).sum(axis=1).unique().shape[0]
 
                 # If this doesn't match, a label is missing
-                if n_starts != n_locations:
-                    raise ValueError(f"Unequal pit starts ({n_starts}) compared to unique locations ({n_locations}): {data}")
-
+                if (
+                    year != 2008 and n_starts != n_locations
+                ):  # 2008 doesn't have any information on this, so it is skipped
+                    raise ValueError(
+                        f"Unequal pit starts ({n_starts}) compared to unique locations ({n_locations}): {data}"
+                    )
 
             # Validate that all stakes and probings have coordinates
             if name in ["stakes", "probings"]:
@@ -214,9 +228,16 @@ def validate_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densitie
                 winter_measurements = data.loc[data["date"].apply(lambda d: d.month < 6)]
                 summer_measurements = data.loc[data["date"].apply(lambda d: d.month > 6)]
                 # At least two stakes need to have both winter and summer measuements (hence the overlapping)
-                overlapping = summer_measurements.set_index("stake_id")["stake_height_cm"] - winter_measurements.set_index("stake_id")["stake_height_cm"]
+                overlapping = (
+                    summer_measurements.set_index("stake_id")["stake_height_cm"]
+                    - winter_measurements.set_index("stake_id")["stake_height_cm"]
+                )
                 overlapping = overlapping[~overlapping.isna()]
-                for subset_data, subset in [(winter_measurements, "winter"), (summer_measurements, "summer"), (overlapping, "overlapping")]:
+                for subset_data, subset in [
+                    (winter_measurements, "winter"),
+                    (summer_measurements, "summer"),
+                    (overlapping, "overlapping"),
+                ]:
                     if subset_data.shape[0] < 2:
                         raise ValueError(f"{year} has too few {subset} stakes: {subset_data.shape[0]}")
 
@@ -267,8 +288,12 @@ def interpret_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densiti
 
         # If there is only one pit, assume that it is taken from the highest measured stake
         if np.unique(year_data[["location", "profile_id"]].astype(str).sum(axis=1)).shape[0] == 1:
-            densities.loc[year_data.index, "geometry"] = repeat_geometry(year_stakes["geometry"].iloc[0], year_data.shape[0])
-            densities.loc[year_data.index, "note"] += " Location assumed to be at the stake highest in the accumulation area."
+            densities.loc[year_data.index, "geometry"] = repeat_geometry(
+                year_stakes["geometry"].iloc[0], year_data.shape[0]
+            )
+            densities.loc[
+                year_data.index, "note"
+            ] += " Location assumed to be at the stake highest in the accumulation area."
             continue
 
         # If there are multiple pits and they have locations corresponding to stake names, use those stakes
@@ -277,7 +302,9 @@ def interpret_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densiti
                 overlapping = densities["location"] == stake["stake_id"]
                 if np.count_nonzero(overlapping) == 0:
                     continue
-                densities.loc[overlapping, "geometry"] = repeat_geometry(stake["geometry"], np.count_nonzero(overlapping))
+                densities.loc[overlapping, "geometry"] = repeat_geometry(
+                    stake["geometry"], np.count_nonzero(overlapping)
+                )
 
         # At this point, all single pits and those with associated stake names have gotten coordinates.
         # Now, there will only be one left (based on visual inspection), and will be assigned to the highest stake.
@@ -288,7 +315,8 @@ def interpret_data(probings: gpd.GeoDataFrame, stakes: gpd.GeoDataFrame, densiti
         densities.loc[nans, "geometry"] = repeat_geometry(year_stakes["geometry"].iloc[0], nans.shape[0])
         densities.loc[nans, "note"] += " Location assumed to be at the stake highest in the accumulation area."
 
-    if (~np.isfinite(densities["geometry"])).any():
+    # if (~np.isfinite(densities["geometry"])).any():
+    if not np.all(valid_points(densities["geometry"])):
         raise NotImplementedError(densities)
 
 
@@ -308,7 +336,6 @@ def repeat_geometry(geometry: object, repeats: int) -> np.ndarray:
         geom_arr[i] = geometry
 
     return geom_arr
-
 
 
 def figure_out_version(
@@ -407,7 +434,11 @@ def parse_1998_version(
             nearby_stake = nearby_stake[: nearby_stake.index(".")]
 
         try:
-            densities.loc[i, "geometry"] = stakes.loc[stakes["stake_id"] == nearby_stake, "geometry"].iloc[0]
+            # Weird terminology here to avoid an __array_interface__ deprecation warning from numpy/shapely/geopandas
+            densities.loc[[i], "geometry"] = gpd.GeoSeries(
+                data=[stakes.loc[stakes["stake_id"] == nearby_stake, "geometry"].iloc[0]],
+                index=[densities.loc[i].index[0]],
+            )
         except IndexError as exception:
             raise ValueError(f"Could not find stake {nearby_stake} in {stakes['stake_id'].unique()}") from exception
 
@@ -518,7 +549,7 @@ def parse_2001_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     # Loop over all columns and find the one with at least three dashes ("-") in it. The stake_id has a dash in it,
     # and there are at least three stakes in the data
     for i in range(stakes_raw.shape[1]):
-        if len(str(stakes_raw.iloc[:, i]).split("-")) >= 3:
+        if len(str(stakes_raw.iloc[:, i]).split("-")) > 3:
             cols[i] = "stake_id"
             break
     stakes_raw.columns = cols
@@ -556,6 +587,7 @@ def parse_2001_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     # Note the parser version for debugging purposes
     for dataframe in probings, stakes, densities:
         dataframe["parser"] = "2001_version"
+
     return probings, stakes, densities
 
 
@@ -615,7 +647,7 @@ def parse_2002_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes_s["note"] += " Summer date is guessed."
 
     # Finally, append the summer measurements to the output
-    stakes = stakes.append(stakes_s, ignore_index=True)
+    stakes = pd.concat([stakes, stakes_s], ignore_index=True)
     stakes = stakes[~stakes["stake_id"].isna()]
 
     # There are multiple density pits in the same sheet, so these need to be split individually.
@@ -642,7 +674,7 @@ def parse_2002_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     density_dfs: list[pd.DataFrame] = []
     # Loop over the row breaks, extract the data from the density sheet, and parse it.
     for i, row in density_df_breaks.iterrows():
-        density_df = set_header(data["Densitet"].iloc[row["start"] : row["end"]], ["Djup (cm)"])
+        density_df = set_header(data["Densitet"].iloc[int(row["start"]) : int(row["end"])], ["Djup (cm)"])
         density_df = density_df[~density_df["Densitet (g/cm3)"].isna()]
 
         # Of course, there are two different ways that depth is expressed...
@@ -740,6 +772,7 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes = gpd.GeoDataFrame(
         columns=["stake_id", "snow_depth_cm", "stake_height_cm", "date", "note", "geometry"], crs=3006
     )
+    geometries: list[shapely.geometry.Point] = []
     # The winter stake measurements are comments in the probings file...
     # Loop through all comments and parse the notes to get the stakes
     # Some stakes are not given IDs, so these will be given an "unknown" number
@@ -766,14 +799,20 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
             unknowns_n += 1
 
         # Take the date, probing depth, coordinate, and note from the
-        stakes.loc[stakes.shape[0]] = (
+        new_i = stakes.shape[0]
+        stakes.loc[new_i] = (
             stake_id,
             probing["snow_depth_cm"],
             stake_height_cm,
             probing["date"],
             probing["note"],
-            probing["geometry"],
+            pd.NA,  # This is the geometry column which is added separately later
         )
+        # The geometry cell can't be added directly because of an annoying numpy/geopandas deprecation warning
+        # So the geometry is put in a temporary list and then added below
+        geometries.append(probing["geometry"])
+
+    stakes["geometry"] = gpd.GeoSeries(geometries, crs=stakes.crs)
 
     # Extract all of the stake names (sorted by the Easting coordinate)
     stakes["x"] = stakes["geometry"].apply(lambda geom: geom.x)
@@ -861,9 +900,14 @@ def parse_2003_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         "note"
     ] = "Only w.e. ablation values were available so the stake height is derived from this and the winter values. A compacted snow density of 0.6 was assumed, and 0.9 for pure ice. The summer date is guessed."
 
-    stakes = stakes.append(
-        summer_ablation.rename(columns={"summer_snow_w_abl": "snow_depth_cm", "summer_height": "stake_height_cm"})[
-            stakes.columns
+    stakes = pd.concat(
+        [
+            stakes,
+            (
+                summer_ablation.rename(
+                    columns={"summer_snow_w_abl": "snow_depth_cm", "summer_height": "stake_height_cm"}
+                )[stakes.columns]
+            ),
         ]
     )
     # Note the parser version for debugging purposes
@@ -1023,7 +1067,7 @@ def parse_2011_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes["note"] = pd.NA
 
     # This is the ablation per stake in meters
-    ablation = pd.read_csv(io.StringIO("\n".join(data["ablation"])), index_col=0, squeeze=True)
+    ablation = pd.read_csv(io.StringIO("\n".join(data["ablation"])), index_col=0).squeeze("columns")
 
     # The mean (average weighted by sample length) density will be used to get the w.e. of the snow
     mean_density = np.average(
@@ -1075,7 +1119,7 @@ def parse_2013_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     """
     # Read the densities
     densities = set_header(data["Density"], ["From", "To", "Density"])
-    winter_date = densities.iloc[0, -1].date()
+    winter_date = pd.Timestamp(densities.iloc[0, -1].date())
     densities = densities[densities["Density"].apply(lambda s: is_number(s) and float(s) != 0.0)]
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["From"], densities["To"])
     densities = densities[["depth_cm", "Density"]].rename(columns={"Density": "density"})
@@ -1261,7 +1305,7 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
         # Remove rows where no stake height exists
         subset = subset[~subset.iloc[:, 0].isna()]
         subset.columns = ["height", "surface", "Stake"]
-        subset["date"] = summer_date 
+        subset["date"] = summer_date
 
         stakes = pd.concat([stakes, subset], ignore_index=True)
 
@@ -1274,6 +1318,7 @@ def parse_2016_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     stakes["geometry"] = parse_coordinates(
         stakes.loc[:, stakes.columns == "Easting"].iloc[:, -1], stakes.loc[:, stakes.columns == "Northing"].iloc[:, -1]
     )
+    stakes.loc[~valid_points(stakes["geometry"]), "geometry"] = None
     # Standardize the way the identification is written (in some: M-1, in others: M1)
     stakes["stake_id"] = stakes["stake_id"].astype(str).str.replace("M-", "M")
 
@@ -1302,13 +1347,13 @@ def parse_2017_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
     probings = data["Mårma Sondering"]
 
     date_str = str(probings.iloc[1, 0])
-    date = datetime.date(year, int(date_str[:2]), int(date_str[2:]))
+    date = pd.Timestamp(year=year, month=int(date_str[:2]), day=int(date_str[2:]))
 
     probings = set_header(probings, ["Date", "Punkt"])
     probings.columns = ["date", "stake_id", "snow_depth_cm", "note"]
     probings["date"] = date
     # It does not contain coordinates, but adding the M allows comparison with 2019 coordinates
-    #probings["stake_id"] = "M" + probings["stake_id"]
+    # probings["stake_id"] = "M" + probings["stake_id"]
 
     stakes = set_header(data["Mårma stakes"], ["Date", "ID", "Snow Depth"])
     columns = {
@@ -1338,7 +1383,7 @@ def parse_2017_version(data: dict[str, pd.DataFrame], year: int) -> tuple[pd.Dat
 
     densities = data["Mårma Densitet"]
     date_str = str(densities.iloc[1, 0])
-    date = datetime.date(year, int(date_str[:2]), int(date_str[2:]))
+    date = pd.Timestamp(year=year, month=int(date_str[:2]), day=int(date_str[2:]))
     densities = set_header(densities, ["Date", "Från (cm)", "Till (cm)"])
     densities["depth_cm"] = pd.IntervalIndex.from_arrays(densities["Från (cm)"], densities["Till (cm)"])
     densities = densities[["depth_cm", "Densitet"]].rename(columns={"Densitet": "density"})
@@ -1513,6 +1558,36 @@ def parse_coordinates(
         scale = 1
 
     return gpd.points_from_xy((easting * scale) + east_offset, (northing * scale) + north_offset, crs=crs).to_crs(3006)
+
+
+def valid_points(points: np.ndarray | gpd.GeoSeries | gpd.array.GeometryArray) -> np.ndarray:
+    """
+    Return a 1D mask of all valid and invalid Shapely Points in an array.
+
+        - Any point with finite x and y coordinates is True
+        - Any point with inf or nan is False
+        - Anything else (like None, EmptyPoint, ...) is False
+
+    :param points: Any type of array with points to evaluate
+
+    :returns: A 1D boolean valid array mask
+    """
+    return np.vectorize(lambda p: np.sum(np.isfinite(getattr(p, "coords", []))) > 0)(np.ravel(points))
+
+
+def test_invalid_coordinates():
+    """Test the valid_points() function."""
+    eastings = [0.0, np.inf, np.nan]
+    northings = [0.0, 0.0, 0.0]
+
+    coords = np.r_[parse_coordinates(eastings, northings), [None, shapely.geometry.Point()]]
+
+    for c in coords:
+        l = list(getattr(c, "xy", []))
+        print(l)
+        print(np.all(np.isfinite(l)))
+
+    assert np.array_equal(valid_points(coords), [True, False, False, False, False])
 
 
 def test_parse_coordinates():
