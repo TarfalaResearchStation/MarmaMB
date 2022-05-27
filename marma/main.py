@@ -4,6 +4,7 @@ import pathlib
 import marma
 import pickle
 import xdem
+import datetime
 
 def prepare_dems(reference_year: int, cache: bool = True):
 
@@ -16,7 +17,7 @@ def prepare_dems(reference_year: int, cache: bool = True):
         cache_files = os.listdir(cache_dir)
     except FileNotFoundError:
         cache_files = []
-    if len(cache_files) == 0 or any(f not in cache_files for f in ["outlines.pkl", "ddem_0.pkl", "dem_1959.tif"]):
+    if len(cache_files) == 0 or any(f not in cache_files for f in ["outlines.pkl", "ddem_0.pkl", "dem_1959-9-23.tif"]):
         cache_valid = False
 
     if cache_valid:
@@ -26,7 +27,9 @@ def prepare_dems(reference_year: int, cache: bool = True):
 
             dems = {}
             for demfile in filter(lambda s: "dem" in s and "tif" in s, cache_files):
-                dems[int(demfile.replace("dem_", "").replace(".tif", ""))] = xdem.DEM(str(cache_dir.joinpath(demfile)))
+                date = datetime.date(*map(int, demfile.replace("dem_", "").replace(".tif", "").split("-")))
+                dems[date.year] = xdem.DEM(str(cache_dir.joinpath(demfile)))
+                dems[date.year].date = date
 
             ddems = []
             for ddemfile in filter(lambda s: "ddem" in s, cache_files):
@@ -66,8 +69,8 @@ def prepare_dems(reference_year: int, cache: bool = True):
                 vgms = {key: value for key, value in ddem.variograms.items() if key != "vgm_model"}
                 pickle.dump([ddem.start_time, ddem.end_time, ddem.data, ddem.transform, ddem.crs, ddem.error, vgms, ddem.stable_terrain_mask], outfile)
 
-        for year, dem in dems_coreg.items():
-            dem.save(cache_dir.joinpath(f"dem_{year}.tif"))
+        for dem in dems_coreg.values():
+            dem.save(cache_dir.joinpath(f"dem_{dem.date.year}-{dem.date.month}-{dem.date.day}.tif"))
             
         with open(cache_dir.joinpath("outlines.pkl"), "wb") as outfile:
             pickle.dump(unstable_terrain, outfile)

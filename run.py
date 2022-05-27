@@ -8,8 +8,10 @@ import numpy as np
 import marma.mb_parsing
 import marma.analysis
 import marma.plotting
+import geopandas as gpd
 
 import os
+import shutil
 import pickle
 import pdb
 import warnings
@@ -17,19 +19,30 @@ import warnings
 
 def main():
 
-    warnings.simplefilter("error")
+    #warnings.simplefilter("error")
     
     probings, stakes, densities = marma.mb_parsing.read_all_data(pathlib.Path("input/massbalance/"))
 
-    for data in [probings, stakes, densities]:
-        data["easting"] = data["geometry"].apply(lambda p: p.x)
-        data["northing"] = data["geometry"].apply(lambda p: p.y)
 
     reference_year = 2016
 
     dems, ddems, unstable_terrain = marma.main.prepare_dems(reference_year=reference_year)
 
+    # The dDEM is interpolated, so generate an interpolated 2021 DEM using "DEM_2016 + dDEM_2016_2021"
     dem_2021_interp = dems[reference_year] + filter(lambda ddem: ddem.end_time.year == 2021 and ddem.start_time.year == reference_year, ddems).__next__()
+
+    tdem = marma.analysis.InterpolatedDEM(dems.copy())
+    tdem.dems[2021] = dem_2021_interp
+
+    for data in [probings, stakes, densities]:
+        data["easting"] = data["geometry"].apply(lambda p: p.x)
+        data["northing"] = data["geometry"].apply(lambda p: p.y)
+
+        # Add elevation from the interpolated DEMs
+        for year, data2 in data.groupby(data["date"].dt.year + data["date"].dt.month / 12 + data["date"].dt.day / 365):
+            data.loc[data2.index, "dem_elevation"] = tdem.sample(data2["easting"], data2["northing"], year=year)
+
+
 
     changes = marma.analysis.volume_change(ddems, unstable_terrain)
 
@@ -51,9 +64,14 @@ def main():
     stakes.to_csv("output/Marma_stakes_1990-2021.csv", index=False)
     densities.to_csv("output/Marma_densities_1990-2021.csv", index=False)
     changes.to_csv("output/Marma_geodetic_1959-2021.csv", index=False)
-    print(changes.iloc[-1])
 
-    print(changes)
+    
+    for name, outlines in gpd.read_file("GIS/shapes/glacier.geojson").groupby("name"):
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="pandas.Int64Index is deprecated")
+            outlines.to_file(f"output/{name}_glacier_outlines_1959-2021.geojson", engine="GeoJSON")
+    shutil.copy("GIS/shapes/snow.geojson", "output/Snowpatches_1959-2021.geojson")
+
 
     return
 

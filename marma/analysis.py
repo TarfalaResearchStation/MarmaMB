@@ -30,6 +30,7 @@ import marma.mb_parsing
 
 def generate_ddems(dems: dict[int, xdem.DEM], max_interpolation_distance: float = 200) -> list[xdem.dDEM]:
 
+
     ddems: list[xdem.dDEM] = []
 
     years = sorted(list(dems.keys()))
@@ -37,8 +38,8 @@ def generate_ddems(dems: dict[int, xdem.DEM], max_interpolation_distance: float 
     for i in range(1, len(years)):
         ddem = xdem.dDEM(
             dems[years[i]] - dems[years[i - 1]],
-            start_time=datetime.date(years[i - 1], 8, 1),
-            end_time=datetime.date(years[i], 8, 1),
+            start_time=dems[years[i - 1]].date,
+            end_time=dems[years[i]].date,
         )
         ddem.data = xdem.volume.linear_interpolation(
             ddem.data, max_search_distance=int(max_interpolation_distance / ddem.res[0])
@@ -61,6 +62,9 @@ def coregister(
         else dems[reference_year]
         for year in dems
     }
+
+    for year in dems:
+        dems_coreg[year].date = dems[year].date
     return dems_coreg
 
 
@@ -402,7 +406,11 @@ class InterpolatedDEM:
         if year in self.dems:
             return self.dems[year].data.squeeze()
 
+
         years = np.array(list(self.dems.keys())).astype(float)
+
+        if year > years.max():
+            return self.dems[years.max()].data.squeeze()
 
         lower_year = years[years < year].max()
         upper_year = years[years > year].min()
@@ -423,7 +431,7 @@ class InterpolatedDEM:
         return data
 
     def sample(self, easting: np.ndarray, northing: np.ndarray, year: int | float) -> np.ndarray:
-        rows, cols = [arr.round(0).astype(int) for arr in self.dems.xy2ij(easting, northing)]
+        rows, cols = [arr.round(0).astype(int) for arr in self.dems[min(self.dems)].xy2ij(easting, northing)]
 
         return self.interpolate(year)[rows, cols]
 

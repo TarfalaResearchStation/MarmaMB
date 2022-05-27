@@ -7,6 +7,7 @@ from pathlib import Path
 import geoutils as gu
 import pandas as pd
 import pathlib
+import datetime
 
 
 def parse_txt_dem(filepath: str | Path, crs: int | str | rio.crs.CRS = 3006, resolution_rounding: int = 1) -> xdem.DEM:
@@ -79,6 +80,14 @@ def load_snow_and_ice(glacier_path: str | Path, snow_path: str | Path) -> gu.Vec
 def load_all_inputs(gis_data_path: Path, temp_path: Path, reference_grid_year: int) -> tuple[dict[int, xdem.DEM], gu.Vector]:
     
     dems: dict[int, xdem.DEM] = {}
+    dates = {
+        1959: datetime.date(1959, 9, 23),
+        1978: datetime.date(1978, 7, 21),
+        1991: datetime.date(1991, 7, 31),
+        2008: datetime.date(2008, 9, 10),
+        2016: datetime.date(2016, 9, 17),
+        2021: datetime.date(2021, 8, 7),
+    }
 
     text_years = [1959, 1978, 1991, 2008]
     available_years = text_years + [2016, 2021]
@@ -96,6 +105,9 @@ def load_all_inputs(gis_data_path: Path, temp_path: Path, reference_grid_year: i
     dems[reference_grid_year] = load_one_dem(reference_grid_year)
 
     dems.update({year: load_one_dem(year) for year in filter(lambda y: y != reference_grid_year, available_years)})
+
+    for year in dems:
+        dems[year].date = dates[year]
 
     unstable_terrain = load_snow_and_ice(
         gis_data_path.joinpath("shapes/glacier.geojson").__str__(),
